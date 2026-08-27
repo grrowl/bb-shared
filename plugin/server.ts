@@ -17,6 +17,7 @@ import {
   TokenNotFoundError,
   type Store,
 } from "./lib/token-store";
+import { registerAuthzRoute } from "./authz/authz";
 
 // ---------------------------------------------------------------------------
 // Data model (SPEC.md §"Data model"). In-memory in v0; the shape is designed
@@ -133,6 +134,10 @@ export default async function plugin(bb: BbPluginApi) {
   // Per-process, in-memory token store. HMAC key + tokens die with the plugin
   // (SPEC §"Data model (in-memory only)"), guest URLs die with them.
   const store: Store = new InMemoryStore();
+
+  // Authoritative authz endpoint the CF worker pulls per guest request
+  // (issue 06). Token-authed; consumes the same in-memory store.
+  registerAuthzRoute(bb, store);
 
   // Broadcast helper — nudges the frontend management panel (issue 16) to
   // re-fetch after any token mutation.

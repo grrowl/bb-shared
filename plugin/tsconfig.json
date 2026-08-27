@@ -23,6 +23,7 @@
   "include": [
     "server.ts",
     "app.tsx",
+    "authz",
     "components",
     "lib",
     "hooks",

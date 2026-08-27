@@ -1,0 +1,24 @@
+name = "bb-shared-worker"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# The tunnel handshake bearer. In production this is set by the plugin's
+# deploy flow (issue 07) as a Cloudflare secret before the worker goes live;
+# for local dev, drop into `.dev.vars`:
+#
+#   TUNNEL_SECRET=dev-secret-anything
+#
+# (Never commit `.dev.vars` — see .gitignore.)
+
+# Single DO instance per worker deployment; ownership of the singleton is
+# implicit — one owner per worker (see SPEC "Non-goals: multi-tenancy").
+[[durable_objects.bindings]]
+name = "TUNNEL_DO"
+class_name = "TunnelDO"
+
+# First-time class migration. Required at initial upload so the temp-account
+# deploy pipeline knows about TunnelDO before the script arrives.
+[[migrations]]
+tag = "v1"
+new_classes = ["TunnelDO"]

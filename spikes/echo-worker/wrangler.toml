@@ -1,0 +1,16 @@
+name = "bb-shared-echo"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Durable Object binding — exercised by the /ws and /do/echo routes.
+[[durable_objects.bindings]]
+name = "ECHO_ROOM"
+class_name = "EchoRoom"
+
+# First-time class migration. Required so the temp-deployment pipeline knows
+# about EchoRoom on initial upload; without it, wrangler refuses to upload a
+# script that exports a DO class it hasn't been told to migrate.
+[[migrations]]
+tag = "v1"
+new_classes = ["EchoRoom"]

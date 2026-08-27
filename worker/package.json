@@ -1,0 +1,18 @@
+{
+  "name": "bb-shared-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bb-shared CF Worker: gates guest browsers on tokens, proxies to the owner's local bb over the shared tunnel.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260825.1",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0",
+    "wrangler": "^4.102.0"
+  }
+}

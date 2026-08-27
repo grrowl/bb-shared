@@ -1,0 +1,11 @@
+{
+  "name": "bb-shared",
+  "version": "0.0.0",
+  "description": "Share bb threads with guests via scoped, revocable tokens. Monorepo root — npm workspaces for the plugin + vendored tunnel packages.",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "plugin"
+  ]
+}

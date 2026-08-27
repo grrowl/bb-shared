@@ -9,13 +9,13 @@
  *          extractTokenStage,           // token → path/query/cookie → 401 if none
  *          setCookieRedirectStage,      // ?token= → cookie + 302 to /{token}/…
  *          prepareTunnelRequestStage,   // Origin := worker public origin
+ *          wsFrameFilterStage(router),  // WS upgrades: 403 terminals, filter /ws
  *          dispatchStage(router),       // → tunnel DO → local bb over the tunnel
  *        ])
  *
  * Layers coming later slot in as additional stages:
  *   - 09 response filters → post-dispatch stage
  *   - 10 mutation gate + route lockouts → pre-dispatch stage
- *   - 11 WS filter → wraps dispatch when `upgrade: websocket`
  *   - 12 SPA chrome shim → post-dispatch stage, html-only
  */
 
@@ -24,6 +24,7 @@ import { runPipeline, type RequestContext } from "./pipeline.js";
 import { extractTokenStage } from "./stages/extract-token.js";
 import { setCookieRedirectStage } from "./stages/set-cookie-redirect.js";
 import { prepareTunnelRequestStage } from "./stages/prepare-tunnel-request.js";
+import { wsFrameFilterStage } from "./stages/ws-frame-filter.js";
 import { dispatchStage } from "./stages/dispatch.js";
 import { tunnelRouterFor } from "./tunnel/do-router.js";
 import { TunnelDO } from "./tunnel/tunnel-do.js";
@@ -55,6 +56,7 @@ export default {
       ctx,
       workerPublicOrigin: url.origin,
       token: null,
+      scope: null,
     };
 
     return runPipeline(
@@ -62,6 +64,10 @@ export default {
         extractTokenStage,
         setCookieRedirectStage,
         prepareTunnelRequestStage,
+        // WS filter runs before dispatch: it owns every WebSocket upgrade
+        // (rejects terminals, interposes the frame filter on /ws) and passes
+        // plain HTTP straight through to the dispatch stage.
+        wsFrameFilterStage(router),
         dispatchStage(router),
       ],
       initial,

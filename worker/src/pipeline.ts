@@ -16,6 +16,7 @@
  */
 
 import type { Env } from "./env.js";
+import type { GuestScope } from "./scope.js";
 
 export interface RequestContext {
   /**
@@ -35,6 +36,13 @@ export interface RequestContext {
   workerPublicOrigin: string;
   /** Present after the token-extraction stage runs; null before. */
   token: string | null;
+  /**
+   * The token's resolved authorization scope. Populated by the authz stage
+   * (issue 10) from the plugin's `/authz` response; null until then. The WS
+   * frame filter (issue 11) and other scope-enforcing stages read this — a
+   * null scope is treated as deny-everything.
+   */
+  scope: GuestScope | null;
 }
 
 export type StageResult =

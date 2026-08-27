@@ -1,0 +1,25 @@
+{
+  "name": "@bb-shared/tunnel-client",
+  "version": "0.0.1",
+  "description": "Vendored copy of bb's transport-generic tunnel client (packages/tunnel-client). Sync manually — see VENDORED.md.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bb-shared/tunnel-contract": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1"
+  }
+}

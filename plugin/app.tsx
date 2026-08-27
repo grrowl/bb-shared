@@ -2,8 +2,9 @@
 //
 // Registers three surfaces from a single `definePluginApp` collector:
 //
-// - `navPanel` — the token management panel. Still a placeholder here;
-//   issue 16 replaces `TokensPanel` without touching this registration.
+// - `navPanel` — the token management console, built in issue 16 (see
+//   `nav-panel/tokens-panel.tsx`). Grouped-by-token CRUD over the RPC contract
+//   with live refetch on the `tokens-changed` realtime channel.
 // - `experimental_threadHeaderAction` — the Share icon-button + popover
 //   built in issue 15 (see `share-popover/share-popover.tsx`). The Share
 //   button lives in the 48 px thread-header row; the popover is portalled
@@ -15,28 +16,10 @@
 //
 // The RPC contract is imported type-only from `./server` — the frontend
 // bundle never pulls the backend module.
-import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
-import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
-import type { rpcContract } from "./server";
+import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { ShareHeaderAction } from "./share-popover/share-popover";
 import { requestShareOpen } from "./share-popover/open-bus";
-
-// A trivial hook that exists only to prove `useRpc` typechecks against the
-// contract. Downstream issues use it in earnest.
-function useSharedRpc() {
-  return useRpc<typeof rpcContract>();
-}
-
-function TokensPanel(_props: PluginNavPanelProps) {
-  // Reference useSharedRpc so the type-only import chain is exercised.
-  // Never call the returned rpc — the backend stubs would throw.
-  void useSharedRpc;
-  return (
-    <div className="p-4 text-sm text-muted-foreground">
-      bb-shared: management panel scaffold. Wired up in issue 16.
-    </div>
-  );
-}
+import { TokensPanel } from "./nav-panel/tokens-panel";
 
 export default definePluginApp((app) => {
   app.slots.navPanel({

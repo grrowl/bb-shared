@@ -1,4 +1,4 @@
-Status:
+Status: claimed
 Type: task
 Blocked by: 08
 

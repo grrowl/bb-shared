@@ -1,0 +1,17 @@
+{
+  "name": "@bb-shared/tunnel-contract",
+  "version": "0.0.1",
+  "description": "Vendored copy of bb's tunnel wire protocol (packages/tunnel-contract). Sync manually — see VENDORED.md.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

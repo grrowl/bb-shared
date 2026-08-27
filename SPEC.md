@@ -127,8 +127,8 @@ Interface designed so a persistent backend can slot in later.
 
 ```ts
 Token = {
-  id: string,                     // "bbsh_" + 32B base64url
-  hash: string,                   // HMAC-SHA256(id) — comparison key
+  id: string,                     // "bbsh_" + 12-char base64url — public handle for CRUD
+  hash: string,                   // HMAC-SHA256(raw_token) — bearer comparison
   label: string,                  // random verb-noun, renameable
   shares: Share[],                // per-thread grants
   created_at: number,
@@ -150,6 +150,15 @@ addShare(token_id, thread_id, project_id, perm): void
 removeShare(token_id, thread_id): void
 updateShare(token_id, thread_id, perm): void
 ```
+
+Two distinct token strings, prefix collision intentional (both start with
+`bbsh_`):
+
+- **Public handle** (`Token.id`, 12 chars) — safe to pass around inside
+  the plugin for CRUD (`renameToken(id, …)`, `deleteToken(id)`, etc.).
+- **Raw bearer** (43 chars, 32 bytes of entropy) — returned once from
+  `mintToken` as the URL-embeddable secret; never persisted. The store
+  keeps only its HMAC-SHA256 as `hash` for authz comparison.
 
 No expiry, no session tracking, no revocation timestamps — the token
 either exists or it doesn't.

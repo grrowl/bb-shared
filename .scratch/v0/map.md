@@ -111,6 +111,18 @@ now `/authz`. Not yet committed.
 - **27 — CF-side tunnel proxy (HIGH / ship-blocker).** `proxyGuestRequest` is a
   503 stub; guest transport unimplemented. Research pending on
   CF-native vs hand-rolled before implementation.
+- **30 — live deploy pipeline fixes (CRITICAL). RESOLVED.** The CF
+  live-verification spike (`research/cf-live-verification.md`) found `deployWorker`
+  broken in four live-API places: PoW off-by-one hash (`checkpoints[0]` must be
+  `SHA256(seed)`), free-plan DO migration needs `new_sqlite_classes` not
+  `new_classes`, the `cloudflare` SDK v7.1.0 `scripts.update` mis-transmits the
+  module (error 10021 — replaced with a raw multipart PUT), and the per-script
+  workers.dev route was never enabled (added the enable POST + a bounded
+  ~15 s propagation wait). All fixed in `pow.ts` / `cf-deploy.ts` /
+  `worker/wrangler.toml` and re-verified LIVE end to end through the plugin's
+  own modules (HTTPS 401 gate + WebSocket 101 into the SQLite DO). Also corrected
+  ticket 28's OAuth constants (real endpoints + `resource:action` scopes) per the
+  spike's TASK 2.
 
 ## v0.1 backlog
 

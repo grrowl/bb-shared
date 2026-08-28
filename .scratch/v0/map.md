@@ -68,18 +68,42 @@ Parent: [SPEC.md](../../SPEC.md)
   21 / SPEC §"Trust model"). Also v1 candidates: TLS-fingerprint pinning
   (L3), best-effort delete of the prior-gen CF account on redeploy (L4).
 
-## Status — v0 COMPLETE
+## Status — v0 owner-side complete; guest transport NOT complete
 
-All 21 delivery tickets resolved. Adversarial security review conducted;
-CONDITIONAL SHIP conditions all met.
+All 21 delivery tickets were resolved and an adversarial review passed, BUT a
+post-v0 review (2026-08-28, on installing to test) found the earlier
+"v0 COMPLETE" claim overstated: the CF-side tunnel proxy is an unimplemented
+503 stub, so guest access does not work end-to-end. Owner-side (plugin RPC,
+`/authz` endpoint, owner UI, worker deploy) is functional and installs cleanly.
 
-Resolved: 01–12, 14–22.
+Resolved: 01–12, 14–22. Reopened as post-v0 findings: 23–27 (below).
 
-- E2E runbook at `docs/e2e-runbook.md`.
+- E2E runbook at `docs/e2e-runbook.md` (guest half currently unrunnable — 27).
 - Adversarial review at `research/tunnel-secret-review.md`.
 - Trust model documented in SPEC §"Trust model".
 - Git history is per-ticket commits (one mixed commit `8c37eb1` from
   round-3 `git add -A` race, noted at the time and left as-is).
+
+## Post-v0 findings (2026-08-28 review, filed as tickets)
+
+Install-blocker already fixed in the working tree: `authz` route path lacked a
+leading `/` (bb 0.40 rejects it) → `plugin/authz/authz.ts` `AUTHZ_ROUTE_PATH`
+now `/authz`. Not yet committed.
+
+- **23 — authz mutation gate deny-by-default (CRITICAL).** `computeAuthz`
+  allows ANY non-thread path regardless of method/perm; no worker mutation
+  gate. read-guest → other-plugin RPC → code exec; write-guest → any thread
+  mutation, not just `/send`. SPEC is right; allowlist must be per-(method,
+  path). Open Q: does `/send` also need body filtering?
+- **24 — `/projects/{p}` scope enforcement (HIGH).** All projects readable by
+  any token; no worker filter. Verify project-nested thread paths aren't a
+  content-read escalation.
+- **25 — response-filter trailing-slash bypass (MEDIUM).** Exact-match filters
+  vs prefix-allow authz; `/api/v1/plugins/` leaks the real inventory.
+- **26 — token length floor (LOW).** Regex accepts 24-byte tokens; mint is 32.
+- **27 — CF-side tunnel proxy (HIGH / ship-blocker).** `proxyGuestRequest` is a
+  503 stub; guest transport unimplemented. Research pending on
+  CF-native vs hand-rolled before implementation.
 
 ## v0.1 backlog
 

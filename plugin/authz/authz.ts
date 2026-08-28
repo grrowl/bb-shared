@@ -210,8 +210,8 @@ export async function authorize(
   return computeAuthz(token, params.path ?? "", params.method ?? "GET");
 }
 
-/** Path segment under `/api/v1/plugins/<id>/http/`. */
-export const AUTHZ_ROUTE_PATH = "authz";
+/** Route path; the host mounts it under `/api/v1/plugins/<id>/http`. */
+export const AUTHZ_ROUTE_PATH = "/authz";
 
 /**
  * Register the token-authed authz route. `auth: "token"` gates it behind the

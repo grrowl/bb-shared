@@ -13,15 +13,17 @@
  *          authzStage(router),          // consult 06's /authz → ctx.scope, 403/404 on deny
  *          wsFrameFilterStage(router),  // WS upgrades: 403 terminals, filter /ws
  *          responseFiltersStage(router),// scope-shape bootstrap JSON endpoints
- *          dispatchStage(router),       // → tunnel DO → local bb over the tunnel
- *        ])
+ *          chromeShimStage(             // 12: decorate dispatch — inject the
+ *            dispatchStage(router)),    //   guest chrome shim into text/html
+ *        ])                             // dispatch → tunnel DO → local bb
  *
  * The authz stage (issue 10) populates `ctx.scope`, so it runs BEFORE every
  * scope-enforcing stage: the WS frame filter (11) and the response filters (09),
  * both of which treat a null scope as deny-everything.
  *
- * Layers coming later slot in as additional stages:
- *   - 12 SPA chrome shim → post-dispatch stage, html-only
+ * The chrome shim (issue 12) decorates the terminal dispatch rather than
+ * trailing it: dispatch short-circuits with `respond`, so a plain post-dispatch
+ * stage would never run. It only touches `text/html` guest responses.
  */
 
 import type { Env } from "./env.js";
@@ -34,6 +36,7 @@ import { authzStage } from "./stages/authz.js";
 import { wsFrameFilterStage } from "./stages/ws-frame-filter.js";
 import { responseFiltersStage } from "./stages/response-filters.js";
 import { dispatchStage } from "./stages/dispatch.js";
+import { chromeShimStage } from "./stages/chrome-shim.js";
 import { tunnelRouterFor } from "./tunnel/do-router.js";
 import { TunnelDO } from "./tunnel/tunnel-do.js";
 
@@ -89,7 +92,12 @@ export default {
         // config, sidebar, plugins, hosts, plugin-settings) before dispatch.
         // Reads `ctx.scope`, populated by the authz stage above.
         responseFiltersStage(router),
-        dispatchStage(router),
+        // 12 SPA chrome shim: decorates the terminal dispatch so guest
+        // `text/html` responses get a `<head>` shim that hides owner-only
+        // chrome. Wraps dispatch (rather than trailing it) because dispatch
+        // short-circuits with `respond` — a plain trailing stage never runs.
+        // Non-HTML responses pass through untouched.
+        chromeShimStage(dispatchStage(router)),
       ],
       initial,
     );

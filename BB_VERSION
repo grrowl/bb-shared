@@ -1,0 +1,9 @@
+# bb SPA version audited by the bb-shared chrome shim (issue 12).
+#
+# The chrome-shim selectors in worker/src/chrome-selectors.ts were verified
+# against this bb checkout. Re-run scripts/check-chrome-selectors.mjs against a
+# fresh build and bump the fields below whenever bb is upgraded; if the check
+# reports drift, update the selectors first.
+bb_version=0.0.1
+bb_commit=31a190d
+audited_at=2026-08-28

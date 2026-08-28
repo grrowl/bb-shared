@@ -97,9 +97,11 @@ now `/authz`. Not yet committed.
   path). Open Q: does `/send` also need body filtering?
 - **24 — `/projects/{p}` scope enforcement (HIGH). RESOLVED.** Authz denies
   out-of-scope projects and gates project-nested thread paths as threads, and
-  the worker `filterProjectDetail` shapes an in-scope project body (strips
-  `sources`, scopes `threads`/`sections`). Follow-up: `filterSidebarBootstrap`
-  still keeps `sources` on in-scope projects (same class, separate endpoint).
+  the worker `filterProjectDetail` scopes an in-scope project body's
+  `threads`/`sections` to the token. Owner ruling: a project's `sources` (repo
+  paths) are fine to show for a project the guest can see, since a project is
+  only in scope when the token holds a thread in it; a project with no shared
+  thread is never shown. So sources are kept in both filters.
 - **25 — response-filter trailing-slash bypass (MEDIUM). RESOLVED.**
   `matchResponseFilter` now strips the trailing slash before matching, so
   `/api/v1/plugins/` hits the empty filter instead of leaking the inventory.

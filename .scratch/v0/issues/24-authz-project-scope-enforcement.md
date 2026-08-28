@@ -68,12 +68,15 @@ the critical part):
 
 Worker-side filter now done too. `worker/src/stages/response-filters.ts` adds
 `filterProjectDetail`, matched for `GET /api/v1/projects/{p}` (a single id
-segment; the bare list and `/{p}/...` subpaths do not match). It strips
-`sources` (host filesystem paths), keeps only in-scope threads, and keeps only
-sections grouping a surviving thread, degrading closed for an out-of-scope or
-malformed body. Trailing-slash variants normalize to the same match (issue 25).
-Tests added; full worker suite 167/167 green, tsc clean.
+segment; the bare list and `/{p}/...` subpaths do not match). It scopes the
+thread list to the token and keeps only sections grouping a surviving thread,
+degrading closed for an out-of-scope or malformed body. Trailing-slash variants
+normalize to the same match (issue 25). Tests added; worker suite 167/167 green.
 
-Follow-up (separate, already noted in map.md): `filterSidebarBootstrap` keeps
-`sources` on the in-scope projects it returns. That is the same class of leak
-for the sidebar endpoint and should get the same `sources: []` treatment.
+Owner clarification on `sources` (2026-08-28): a project's repo paths are NOT
+secret for a project the guest can see, because a project is only in scope when
+the token holds a thread in it. The real rule is that a project with no shared
+thread must never be shown, which authz (project scope) and the sidebar filter
+(drops out-of-scope projects) already enforce. So `filterProjectDetail` KEEPS
+`sources`, and `filterSidebarBootstrap`'s existing retention of in-scope sources
+is correct, not a leak. No sidebar change needed.

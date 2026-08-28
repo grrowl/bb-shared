@@ -44,9 +44,11 @@ const HOSTS_PATH = `${API}/hosts`;
 // default. This filter is belt-and-braces for the ticket-specified path.
 const PLUGIN_SETTINGS_PREFIX = `${API}/plugin-settings/`;
 // A specific project's detail: `GET /api/v1/projects/{p}` (single id segment,
-// no further subpath). Authz already denies an out-of-scope project (issue 24),
-// but the body of an in-scope one still carries `sources` (host filesystem
-// paths) and sibling threads, so it gets reshaped like the sidebar.
+// no further subpath). Authz already denies an out-of-scope project (issue 24);
+// an in-scope one is reshaped to scope its thread list to the token. Its repo
+// `sources` stay — the guest holds a thread in the project, so its paths are
+// not secret to them; the rule is only that a project with no shared thread is
+// never shown, which authz + the sidebar already enforce.
 const PROJECT_DETAIL_RE = /^\/api\/v1\/projects\/[^/]+$/;
 
 // The personal-project stub returned to guests. bb's SPA requires a
@@ -141,25 +143,28 @@ export function filterSidebarBootstrap(
 
 /**
  * `GET /api/v1/projects/{p}`. Reshape one project's detail to the guest's
- * scope (issue 24): strip `sources` (host filesystem paths), keep only in-scope
- * threads, and keep only sections that still group a surviving thread. Degrades
- * closed — a body for a project not in scope (authz should already have denied
- * it) returns empty.
+ * scope (issue 24): keep only in-scope threads and the sections that still
+ * group a surviving thread. The project's `sources` (repo paths) are kept — a
+ * project is only in scope because the token holds a thread in it, so its paths
+ * are not secret to this guest. Degrades closed for a body whose project is not
+ * in scope (authz should already have denied it).
  */
 export function filterProjectDetail(
   upstream: unknown,
   scope: GuestScope,
 ): Record<string, unknown> {
   if (!isRecord(upstream)) return {};
-  // Defense in depth: authz denies an out-of-scope project, but if an
-  // unexpected body arrives, disclose nothing.
+  // A project is in scope only because the token shares a thread in it. authz
+  // already denies an out-of-scope project; degrade closed here too if an
+  // unexpected body arrives.
   if (typeof upstream.id === "string" && !scope.projectIds.has(upstream.id)) {
     return {};
   }
 
-  const { sources: _sources, ...rest } = upstream;
+  // Scope the thread list to the token — a guest sees only the threads they
+  // were granted, even within a project they can see. `sources` stay.
   const threads = scopedThreads(upstream.threads, scope);
-  const result: Record<string, unknown> = { ...rest, sources: [], threads };
+  const result: Record<string, unknown> = { ...upstream, threads };
 
   // If the project carries its own sections, keep only those grouping a
   // surviving in-scope thread (mirrors the sidebar-bootstrap filter).

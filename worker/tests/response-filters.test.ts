@@ -307,9 +307,11 @@ describe("filterProjectDetail (issue 24)", () => {
     ],
   });
 
-  it("strips sources and scopes threads + sections to the token", () => {
+  it("keeps in-scope sources but scopes threads + sections to the token", () => {
     const out = filterProjectDetail(projectDetail(), SCOPE);
-    expect(out.sources).toEqual([]);
+    // The project is in scope (the token holds a thread in it), so its repo
+    // paths are fine to show; only the thread list is scoped.
+    expect(out.sources).toEqual([{ path: "/Users/owner/secret/repo" }]);
     expect((out.threads as { id: string }[]).map((t) => t.id)).toEqual([T_IN]);
     expect((out.sections as { id: string }[]).map((s) => s.id)).toEqual([
       SEC_IN,

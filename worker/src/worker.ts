@@ -9,13 +9,18 @@
  *          extractTokenStage,           // token → path/query/cookie → 401 if none
  *          setCookieRedirectStage,      // ?token= → cookie + 302 to /{token}/…
  *          prepareTunnelRequestStage,   // Origin := worker public origin
+ *          routeLockoutsStage,          // /settings|/extensions|/tools|/hosts → /{token}/
+ *          authzStage(router),          // consult 06's /authz → ctx.scope, 403/404 on deny
  *          wsFrameFilterStage(router),  // WS upgrades: 403 terminals, filter /ws
+ *          responseFiltersStage(router),// scope-shape bootstrap JSON endpoints
  *          dispatchStage(router),       // → tunnel DO → local bb over the tunnel
  *        ])
  *
+ * The authz stage (issue 10) populates `ctx.scope`, so it runs BEFORE every
+ * scope-enforcing stage: the WS frame filter (11) and the response filters (09),
+ * both of which treat a null scope as deny-everything.
+ *
  * Layers coming later slot in as additional stages:
- *   - 09 response filters → post-dispatch stage
- *   - 10 mutation gate + route lockouts → pre-dispatch stage
  *   - 12 SPA chrome shim → post-dispatch stage, html-only
  */
 
@@ -24,7 +29,10 @@ import { runPipeline, type RequestContext } from "./pipeline.js";
 import { extractTokenStage } from "./stages/extract-token.js";
 import { setCookieRedirectStage } from "./stages/set-cookie-redirect.js";
 import { prepareTunnelRequestStage } from "./stages/prepare-tunnel-request.js";
+import { routeLockoutsStage } from "./stages/route-lockouts.js";
+import { authzStage } from "./stages/authz.js";
 import { wsFrameFilterStage } from "./stages/ws-frame-filter.js";
+import { responseFiltersStage } from "./stages/response-filters.js";
 import { dispatchStage } from "./stages/dispatch.js";
 import { tunnelRouterFor } from "./tunnel/do-router.js";
 import { TunnelDO } from "./tunnel/tunnel-do.js";
@@ -64,10 +72,23 @@ export default {
         extractTokenStage,
         setCookieRedirectStage,
         prepareTunnelRequestStage,
+        // Route lockouts: bounce guest hard-navigations to owner-only SPA
+        // routes (/settings, /extensions, /tools, /hosts) back to /{token}/
+        // before authz would otherwise 404 them as unrecognized paths.
+        routeLockoutsStage,
+        // Authz gate (issue 10): the single consultation of 06's /authz
+        // endpoint. Populates `ctx.scope` for the scope-enforcing stages
+        // below, and 403s (API) / 404s (HTML) a denied request. Must run
+        // BEFORE both wsFrameFilterStage and responseFiltersStage.
+        authzStage(router),
         // WS filter runs before dispatch: it owns every WebSocket upgrade
         // (rejects terminals, interposes the frame filter on /ws) and passes
         // plain HTTP straight through to the dispatch stage.
         wsFrameFilterStage(router),
+        // 09 response filters: reshape scoped bootstrap endpoints (system
+        // config, sidebar, plugins, hosts, plugin-settings) before dispatch.
+        // Reads `ctx.scope`, populated by the authz stage above.
+        responseFiltersStage(router),
         dispatchStage(router),
       ],
       initial,

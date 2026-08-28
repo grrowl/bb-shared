@@ -27,6 +27,7 @@
     "components",
     "lib",
     "hooks",
-    "share-popover"
+    "share-popover",
+    "worker-lifecycle"
   ]
 }

@@ -1,4 +1,4 @@
-Status:
+Status: resolved
 Type: task
 Blocked by: 01, 04, 14
 
@@ -89,3 +89,68 @@ Flow:
 ## Comments
 
 ## Answer
+
+Delivered a single `WorkerLifecycle` service mounted under
+`bb.background.service("worker-lifecycle", …)` that owns the CF worker
+end-to-end: deploy pipeline, secret provisioning, health/redeploy loop, the
+`SharedTunnel` it drives, and the CF claim nudge.
+
+### Module structure — `plugin/worker-lifecycle/`
+
+- `pow.ts` — PoW solver (SHA-256 checkpoint chain, `k*g ≤ 64M` cap). Pure +
+  unit-tested (real SHA-256 oracle) since there's no CF egress in the sandbox.
+- `cf-deploy.ts` — the always-temp deploy path: challenge → solve → provision
+  (`POST /provisioning/previews`) → upload via the `cloudflare` SDK
+  (`workers.scripts.update` + `workers.subdomains.get`). Uploads the DO binding
+  + two `secret_text` bindings (`TUNNEL_SECRET`, `AUTHZ_TOKEN`) + first-time DO
+  migration. Retry with capped exponential backoff; non-retriable CF 4xx fail
+  fast. Returns `{ url, deploymentId, accountId, apiToken, expiresAt, claim }`.
+- `worker-bundle.ts` — bundles `worker/` via `wrangler deploy --dry-run
+  --outdir` (worker's own devDep bin; no wrangler runtime dep, `worker/` never
+  modified) and returns the ESM string.
+- `tunnel-secret.ts` — mints the tunnel handshake secret (32B CSPRNG →
+  base64url, rotated every deploy). Full **design + threat-model header
+  comment** covering worker impersonation, deploy-log leak, replay across
+  redeploys, and cross-owner reuse — flagged for the adversarial review pass.
+- `worker-record.ts` — persists worker state in `bb.storage.kv` (the concrete
+  durable surface behind SPEC's "PluginSettings"); zod-validated, malformed →
+  wipe + fresh bootstrap.
+- `worker-lifecycle.ts` — the service. Bootstrap-or-reuse on start (health-check
+  persisted record; alive → reuse + re-attach tunnel with the persisted secret,
+  dead/expired → wipe), lazy first-deploy via `ensureDeployed()` (called from
+  `mintToken`), 60s health loop while any token exists, health-fail → wipe +
+  fresh deploy, and tunnel rotation (stop old → mint fresh secret → deploy →
+  start new).
+
+### Wiring in `server.ts`
+
+- Extended `workerStatusSchema` to `{ url?, state, expiresAt?, claim?: { url,
+  expiresAt }, healthy, tunnel? }` and implemented `getWorkerStatus` →
+  `lifecycle.getStatus()` (redacted: apiToken/tunnelSecret never cross the
+  boundary; `claim`/`expiresAt` feed 16's nav-panel nudge + countdown).
+- `mintToken` awaits `lifecycle.ensureDeployed()` (lazy first-deploy) and passes
+  the live worker origin to `buildShareUrl`.
+- Broadcasts on `REALTIME_CHANNELS.workerChanged` ("worker-changed") on every
+  state/tunnel transition.
+
+### Secrets
+
+1. Authz endpoint secret — `bb.sdk.plugins.token({ pluginId })`, plumbed to the
+   deploy as the `AUTHZ_TOKEN` secret-text binding.
+2. Tunnel handshake secret — minted here, planted as `TUNNEL_SECRET`, handed to
+   `SharedTunnel`, rotated on every redeploy. Persisted with the record so a
+   plugin restart can re-attach to a still-healthy worker.
+
+### Dependency
+
+Added `cloudflare` ^7.1.0 to root `package.json` (+ `package-lock.json`); it
+bundles cleanly into the built `dist/server.js`.
+
+### Verification
+
+- `tsc --noEmit` clean.
+- `bb plugin build .` succeeds (cloudflare bundled in).
+- 59 vitest tests pass (15 new: PoW known-answer + cap, secret shape, record
+  round-trip/wipe, and lifecycle state machine — deploy/persist/tunnel, secret
+  redaction, dedupe, error state, reuse-on-restart, dead-wipe, rotation).
+- Full CF integration not run (no CF creds in sandbox, per ticket).

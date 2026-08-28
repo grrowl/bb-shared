@@ -7,6 +7,7 @@
 //
 // One consumer: the frontend at `app.tsx`, which reaches these methods with
 // `useRpc<typeof rpcContract>()`.
+import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -18,6 +19,11 @@ import {
   type Store,
 } from "./lib/token-store";
 import { registerAuthzRoute } from "./authz/authz";
+import {
+  WorkerLifecycle,
+  bundleWorker,
+  createWorkerRecordStore,
+} from "./worker-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Data model (SPEC.md §"Data model"). In-memory in v0; the shape is designed
@@ -44,9 +50,27 @@ export const tokenSchema = z.object({
 });
 export type Token = z.output<typeof tokenSchema>;
 
+// getWorkerStatus payload (issue 07). `url`/`claim` are surfaced to the owner
+// UI (the 16 nav panel reads `claim` for the "claim this worker" nudge); the
+// worker's apiToken + tunnelSecret never cross this boundary. `state` drives
+// the deploy/redeploy/health UI; `expiresAt` drives the CF claim countdown.
 export const workerStatusSchema = z.object({
   url: z.string().optional(),
+  state: z.enum(["idle", "deploying", "live", "unhealthy", "error"]),
+  expiresAt: z.number().optional(),
+  claim: z
+    .object({ url: z.string(), expiresAt: z.number().nullable() })
+    .optional(),
   healthy: z.boolean(),
+  tunnel: z
+    .enum([
+      "disconnected",
+      "connecting",
+      "connected",
+      "reconnecting",
+      "stopped",
+    ])
+    .optional(),
 });
 export type WorkerStatus = z.output<typeof workerStatusSchema>;
 
@@ -139,23 +163,56 @@ export default async function plugin(bb: BbPluginApi) {
   // (issue 06). Token-authed; consumes the same in-memory store.
   registerAuthzRoute(bb, store);
 
+  // Worker lifecycle manager (issue 07): owns the CF worker deploy pipeline,
+  // secret provisioning, health/redeploy loop, and the SharedTunnel (issue 14)
+  // it drives. Mounted as a single background service below.
+  //
+  // The worker source lives at `../worker` relative to this plugin package in
+  // the v0 monorepo; `BB_SHARED_WORKER_DIR` overrides for packaged installs
+  // where the layout differs.
+  const workerDir =
+    process.env.BB_SHARED_WORKER_DIR ??
+    fileURLToPath(new URL("../worker", import.meta.url));
+
+  const lifecycle = new WorkerLifecycle({
+    recordStore: createWorkerRecordStore(bb.storage.kv),
+    log: bb.log,
+    publishStatus: (status) => {
+      bb.realtime.publish(REALTIME_CHANNELS.workerChanged, status);
+    },
+    getLoopbackBaseUrl: () => bb.server.loopbackBaseUrl,
+    // The authz endpoint secret — bb's built-in per-plugin token. We only plumb
+    // it to the deploy (SPEC §"Secret provisioning" #1).
+    getAuthzToken: async () => {
+      const { token } = await bb.sdk.plugins.token({ pluginId: bb.pluginId });
+      return token;
+    },
+    // Health loop only runs while at least one guest token exists.
+    hasTokens: async () => (await store.listTokens()).length > 0,
+    bundleWorker: () => bundleWorker({ workerDir, log: bb.log }),
+  });
+
+  bb.background.service("worker-lifecycle", {
+    start: (signal) => lifecycle.start(signal),
+  });
+
   // Broadcast helper — nudges the frontend management panel (issue 16) to
   // re-fetch after any token mutation.
   const emitTokensChanged = () => {
     bb.realtime.publish(REALTIME_CHANNELS.tokensChanged, { at: Date.now() });
   };
 
-  const notImplemented = (method: string): never => {
-    throw new Error(`not implemented: ${method}`);
-  };
-
   bb.rpc.register(rpcContract, {
     async mintToken(input) {
       const { token, rawToken } = await store.mintToken({ label: input.label });
-      // TODO(issue 07): pass a real workerOrigin once the deploy pipeline is
-      // wired through — for now the URL carries a `<worker-pending>`
-      // placeholder that the owner UI can badge as unclaimed.
-      const url = buildShareUrl(rawToken);
+      // Lazy first-deploy (SPEC §"Worker lifecycle"): the first mint triggers
+      // the worker deploy. ensureDeployed dedupes and swallows deploy errors,
+      // so minting never fails on a worker hiccup — the URL falls back to the
+      // `<worker-pending>` placeholder and the owner UI badges it until the
+      // health loop brings a worker up.
+      await lifecycle.ensureDeployed();
+      const workerOrigin = lifecycle.currentWorkerUrl() ?? undefined;
+      const url = buildShareUrl(rawToken, { workerOrigin });
       emitTokensChanged();
       return { token, url };
     },
@@ -219,9 +276,8 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
 
-    // Left for issue 07 (worker deploy). Falls back to the scaffold stub.
     getWorkerStatus(): WorkerStatus {
-      return notImplemented("getWorkerStatus");
+      return lifecycle.getStatus();
     },
   });
 

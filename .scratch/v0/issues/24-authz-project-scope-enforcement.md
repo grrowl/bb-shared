@@ -1,4 +1,4 @@
-Status: in-progress
+Status: resolved
 Type: bug
 Severity: high
 Blocked by:
@@ -66,10 +66,14 @@ the critical part):
 - A bare `/projects` list (no id) now classifies as invalid → denied; a guest
   gets its scoped tree from `/sidebar-bootstrap`, not the raw list.
 
-REMAINING (worker-side, keeps this ticket in-progress): the worker still needs a
-response FILTER for an in-scope `GET /api/v1/projects/{p}` to SHAPE the body
-(strip `sources`, filter `threads`/`sections` to the token's scope), parallel to
-the sidebar-bootstrap filter. Authz now allows an in-scope project, but the
-worker forwards the full response, so an in-scope project response still exposes
-its `sources` and sibling threads. That filter lives in
-`worker/src/stages/response-filters.ts` and is not done here.
+Worker-side filter now done too. `worker/src/stages/response-filters.ts` adds
+`filterProjectDetail`, matched for `GET /api/v1/projects/{p}` (a single id
+segment; the bare list and `/{p}/...` subpaths do not match). It strips
+`sources` (host filesystem paths), keeps only in-scope threads, and keeps only
+sections grouping a surviving thread, degrading closed for an out-of-scope or
+malformed body. Trailing-slash variants normalize to the same match (issue 25).
+Tests added; full worker suite 167/167 green, tsc clean.
+
+Follow-up (separate, already noted in map.md): `filterSidebarBootstrap` keeps
+`sources` on the in-scope projects it returns. That is the same class of leak
+for the sidebar endpoint and should get the same `sources: []` treatment.

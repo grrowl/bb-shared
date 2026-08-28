@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterSystemConfig,
   filterSidebarBootstrap,
+  filterProjectDetail,
   emptyPluginsResponse,
   emptyHostsResponse,
   emptyPluginSettingsResponse,
@@ -291,7 +292,66 @@ describe("constant filters", () => {
 // matchResponseFilter — routing table
 // =========================================================================
 
+describe("filterProjectDetail (issue 24)", () => {
+  const projectDetail = () => ({
+    id: P_IN,
+    name: "In Project",
+    sources: [{ path: "/Users/owner/secret/repo" }],
+    threads: [
+      threadEntry(T_IN, P_IN, SEC_IN),
+      threadEntry(T_OUT, P_IN, SEC_OUT),
+    ],
+    sections: [
+      { id: SEC_IN, name: "In" },
+      { id: SEC_OUT, name: "Out" },
+    ],
+  });
+
+  it("strips sources and scopes threads + sections to the token", () => {
+    const out = filterProjectDetail(projectDetail(), SCOPE);
+    expect(out.sources).toEqual([]);
+    expect((out.threads as { id: string }[]).map((t) => t.id)).toEqual([T_IN]);
+    expect((out.sections as { id: string }[]).map((s) => s.id)).toEqual([
+      SEC_IN,
+    ]);
+    // Non-secret metadata survives.
+    expect(out.id).toBe(P_IN);
+    expect(out.name).toBe("In Project");
+  });
+
+  it("degrades closed for a project not in scope", () => {
+    const out = filterProjectDetail(
+      { ...projectDetail(), id: P_OUT },
+      SCOPE,
+    );
+    expect(out).toEqual({});
+  });
+
+  it("degrades closed on malformed upstream", () => {
+    expect(filterProjectDetail(null, SCOPE)).toEqual({});
+    expect(filterProjectDetail("nope", EMPTY_SCOPE)).toEqual({});
+  });
+});
+
 describe("matchResponseFilter", () => {
+  it("reshapes a specific project, not the bare list or subpaths (issue 24)", () => {
+    expect(matchResponseFilter("GET", "/api/v1/projects/proj_in")?.kind).toBe(
+      "reshape",
+    );
+    // trailing slash normalizes to the same match (issue 25 interaction).
+    expect(matchResponseFilter("GET", "/api/v1/projects/proj_in/")?.kind).toBe(
+      "reshape",
+    );
+    // bare list → not matched (authz denies it)
+    expect(matchResponseFilter("GET", "/api/v1/projects")).toBeNull();
+    // a project-nested thread path is the thread's own concern, not reshaped
+    expect(
+      matchResponseFilter("GET", "/api/v1/projects/proj_in/threads/thr_in"),
+    ).toBeNull();
+    // writes never reshape
+    expect(matchResponseFilter("DELETE", "/api/v1/projects/proj_in")).toBeNull();
+  });
+
   it("matches the five GET endpoints", () => {
     expect(matchResponseFilter("GET", "/api/v1/system/config")?.kind).toBe(
       "reshape",

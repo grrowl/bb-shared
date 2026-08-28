@@ -95,10 +95,11 @@ now `/authz`. Not yet committed.
   gate. read-guest → other-plugin RPC → code exec; write-guest → any thread
   mutation, not just `/send`. SPEC is right; allowlist must be per-(method,
   path). Open Q: does `/send` also need body filtering?
-- **24 — `/projects/{p}` scope enforcement (HIGH). IN PROGRESS.** Authz now
-  denies out-of-scope projects and gates project-nested thread paths as
-  threads; the worker response filter to shape an in-scope project body
-  (strip `sources`, scope `threads`) still remains.
+- **24 — `/projects/{p}` scope enforcement (HIGH). RESOLVED.** Authz denies
+  out-of-scope projects and gates project-nested thread paths as threads, and
+  the worker `filterProjectDetail` shapes an in-scope project body (strips
+  `sources`, scopes `threads`/`sections`). Follow-up: `filterSidebarBootstrap`
+  still keeps `sources` on in-scope projects (same class, separate endpoint).
 - **25 — response-filter trailing-slash bypass (MEDIUM). RESOLVED.**
   `matchResponseFilter` now strips the trailing slash before matching, so
   `/api/v1/plugins/` hits the empty filter instead of leaking the inventory.

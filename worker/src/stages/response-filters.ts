@@ -43,6 +43,11 @@ const HOSTS_PATH = `${API}/hosts`;
 // request settings, and the mutation gate (issue 10) denies everything else by
 // default. This filter is belt-and-braces for the ticket-specified path.
 const PLUGIN_SETTINGS_PREFIX = `${API}/plugin-settings/`;
+// A specific project's detail: `GET /api/v1/projects/{p}` (single id segment,
+// no further subpath). Authz already denies an out-of-scope project (issue 24),
+// but the body of an in-scope one still carries `sources` (host filesystem
+// paths) and sibling threads, so it gets reshaped like the sidebar.
+const PROJECT_DETAIL_RE = /^\/api\/v1\/projects\/[^/]+$/;
 
 // The personal-project stub returned to guests. bb's SPA requires a
 // non-nullable `personalProject` in the bootstrap (it reads `.id`, `.name` and
@@ -134,6 +139,45 @@ export function filterSidebarBootstrap(
   return { sections, projects, personalProject: stub };
 }
 
+/**
+ * `GET /api/v1/projects/{p}`. Reshape one project's detail to the guest's
+ * scope (issue 24): strip `sources` (host filesystem paths), keep only in-scope
+ * threads, and keep only sections that still group a surviving thread. Degrades
+ * closed — a body for a project not in scope (authz should already have denied
+ * it) returns empty.
+ */
+export function filterProjectDetail(
+  upstream: unknown,
+  scope: GuestScope,
+): Record<string, unknown> {
+  if (!isRecord(upstream)) return {};
+  // Defense in depth: authz denies an out-of-scope project, but if an
+  // unexpected body arrives, disclose nothing.
+  if (typeof upstream.id === "string" && !scope.projectIds.has(upstream.id)) {
+    return {};
+  }
+
+  const { sources: _sources, ...rest } = upstream;
+  const threads = scopedThreads(upstream.threads, scope);
+  const result: Record<string, unknown> = { ...rest, sources: [], threads };
+
+  // If the project carries its own sections, keep only those grouping a
+  // surviving in-scope thread (mirrors the sidebar-bootstrap filter).
+  if (Array.isArray(upstream.sections)) {
+    const allowed = new Set<string>();
+    for (const thread of threads) {
+      if (typeof thread.sectionId === "string") allowed.add(thread.sectionId);
+    }
+    result.sections = upstream.sections.filter(
+      (section): section is Record<string, unknown> =>
+        isRecord(section) &&
+        typeof section.id === "string" &&
+        allowed.has(section.id),
+    );
+  }
+  return result;
+}
+
 /** `GET /api/v1/plugins`. v0 disables every plugin frontend for guests. */
 export function emptyPluginsResponse(): { plugins: [] } {
   return { plugins: [] };
@@ -193,6 +237,12 @@ export function matchResponseFilter(
     default:
       if (pathname.startsWith(PLUGIN_SETTINGS_PREFIX)) {
         return { kind: "constant", value: emptyPluginSettingsResponse() };
+      }
+      // `GET /api/v1/projects/{p}` — shape the in-scope project body (24). A
+      // bare `/api/v1/projects` list and any `/projects/{p}/...` subpath do not
+      // match, so they are not reshaped here.
+      if (PROJECT_DETAIL_RE.test(pathname)) {
+        return { kind: "reshape", filter: filterProjectDetail };
       }
       return null;
   }

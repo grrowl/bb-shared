@@ -66,18 +66,12 @@ Parent: [SPEC.md](../../SPEC.md)
 
 ## Frontier
 
-Rounds 1, 2, 3, 4 all done. Resolved: 01–06, 08–12, 14–16.
+Rounds 1, 2, 3, 4 done. Round 5 in flight (18 ✓, 19).
+Resolved: 01–06, 08–12, 14–16, 18.
 
-Currently unblocked: **17, 18, 19.**
+Currently unblocked: **17, 19.**
 
-Recommended round 5 (2 parallel, both small):
-
-- **18** realtime-channels split — cleanup so frontend can import
-  channel names without dragging node:crypto into the browser bundle.
-- **19** 06 authz: add project_scope — enables 09/11 to populate
-  `GuestScope.projectIds` correctly.
-
-Round 6 (after 18/19 land):
+Round 6 (after 19 lands):
 
 - **17** e2e smoke — manual runbook walking the whole flow.
 

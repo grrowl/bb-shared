@@ -1,4 +1,4 @@
-Status: open
+Status: resolved
 Type: bug
 Severity: critical
 Blocked by:
@@ -79,3 +79,29 @@ server-contract routes and assert deny-by-default for every non-allowlisted
 ## Comments
 
 ## Answer
+
+Fixed in `plugin/authz/authz.ts`. `computeAuthz` is now deny-by-default and
+method-aware, replacing the "non-thread ⇒ always allow" branch:
+
+- Non-thread bootstrap paths (`/system/config`, `/sidebar-bootstrap`,
+  `/plugins`, `/hosts`, `/plugin-settings/*`): GET allowed (the worker shapes
+  them); any mutating method denied. So a read guest POSTing to another
+  plugin's RPC (e.g. `/api/v1/plugins/automations/rpc/create`) is now denied.
+- Thread paths: the ONLY guest mutation is `POST /threads/{t}/send` with write.
+  `classifyPath` now returns the subpath after the thread id (`rest`), and the
+  decision allows a mutating method only when `method === POST && rest ===
+  "/send"`. So a write guest DELETE/PATCH/abort on a thread is denied.
+
+Enforcement: the worker consults `/authz` per request and denies any
+`allowed:false` before dispatch (`worker/src/stages/authz.ts:195`), so this
+authoritative decision closes the hole end to end. No separate worker mutation
+gate was added; the deny-by-default decision plus the worker's existing
+`GUEST_DENIED_RPC_RE` cover it. A worker-side mutation gate as extra
+defense-in-depth (so a future authz regression cannot reopen this) is left as
+optional hardening, not required for correctness.
+
+Tests: `plugin/authz/authz.test.ts` updated — the assertions that encoded the
+old "non-thread always allowed" behavior are replaced, and a
+`deny-by-default (issues 23, 24)` block adds read-guest-RPC-POST, thread
+DELETE, non-send POST, and the project cases. Full suite 81/81 green, tsc
+clean, plugin rebuilt and reinstalled.

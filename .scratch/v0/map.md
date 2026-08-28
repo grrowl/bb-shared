@@ -90,14 +90,15 @@ Install-blocker already fixed in the working tree: `authz` route path lacked a
 leading `/` (bb 0.40 rejects it) → `plugin/authz/authz.ts` `AUTHZ_ROUTE_PATH`
 now `/authz`. Not yet committed.
 
-- **23 — authz mutation gate deny-by-default (CRITICAL).** `computeAuthz`
+- **23 — authz mutation gate deny-by-default (CRITICAL). RESOLVED.** `computeAuthz`
   allows ANY non-thread path regardless of method/perm; no worker mutation
   gate. read-guest → other-plugin RPC → code exec; write-guest → any thread
   mutation, not just `/send`. SPEC is right; allowlist must be per-(method,
   path). Open Q: does `/send` also need body filtering?
-- **24 — `/projects/{p}` scope enforcement (HIGH).** All projects readable by
-  any token; no worker filter. Verify project-nested thread paths aren't a
-  content-read escalation.
+- **24 — `/projects/{p}` scope enforcement (HIGH). IN PROGRESS.** Authz now
+  denies out-of-scope projects and gates project-nested thread paths as
+  threads; the worker response filter to shape an in-scope project body
+  (strip `sources`, scope `threads`) still remains.
 - **25 — response-filter trailing-slash bypass (MEDIUM).** Exact-match filters
   vs prefix-allow authz; `/api/v1/plugins/` leaks the real inventory.
 - **26 — token length floor (LOW).** Regex accepts 24-byte tokens; mint is 32.

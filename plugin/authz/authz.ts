@@ -54,7 +54,11 @@ export function isMutatingMethod(method: string): boolean {
 
 type PathClass =
   | { kind: "non-thread" }
-  | { kind: "thread"; threadId: string }
+  // `rest` is the subpath after the thread id ("" or e.g. "/send"), so the
+  // decision can allow only `POST …/send` as a guest mutation (issue 23).
+  | { kind: "thread"; threadId: string; rest: string }
+  // A specific project's metadata; allowed only if the token shares it (24).
+  | { kind: "project"; projectId: string }
   | { kind: "invalid" };
 
 // Non-thread endpoints the worker shapes via its own response filters (issue
@@ -69,9 +73,10 @@ const NON_THREAD_EXACT = new Set([
 ]);
 
 // Prefix families: the path itself or any subpath is a non-thread endpoint.
-// `/projects` is included because SPEC's response-filter table lists
-// `GET /api/v1/projects/{p}` as a guest-visible (worker-filtered) endpoint.
-const NON_THREAD_PREFIXES = ["/plugin-settings", "/plugins", "/hosts", "/projects"];
+// `/projects` is intentionally NOT here — project paths get their own scoped
+// classification (see `classifyPath`), so an out-of-scope project read is
+// denied instead of passed through (issue 24).
+const NON_THREAD_PREFIXES = ["/plugin-settings", "/plugins", "/hosts"];
 
 /** Strip query/hash, force a leading slash, drop the `/api/v1` API prefix and
  * any trailing slash. Returns "" for empty input. */
@@ -90,8 +95,23 @@ export function classifyPath(rawPath: string): PathClass {
   const path = normalizePath(rawPath);
   if (!path || path === "/") return { kind: "invalid" };
 
-  const threadMatch = path.match(/^\/threads\/([^/]+)(?:\/.*)?$/);
-  if (threadMatch) return { kind: "thread", threadId: threadMatch[1] };
+  // Thread paths, top-level or nested under a project. A project-nested thread
+  // path (`/projects/{p}/threads/{t}`) MUST classify as a thread so it goes
+  // through the thread scope + perm gate, not the project or non-thread branch
+  // (issue 24 escalation). `rest` captures the subpath after the thread id.
+  const threadMatch = path.match(
+    /^(?:\/projects\/[^/]+)?\/threads\/([^/]+)(\/.*)?$/,
+  );
+  if (threadMatch) {
+    return { kind: "thread", threadId: threadMatch[1], rest: threadMatch[2] ?? "" };
+  }
+
+  // A specific project's metadata (`/projects/{p}` and subpaths). Scoped in
+  // `computeAuthz` (issue 24). A bare `/projects` list has no id to scope, so
+  // it does not match here and falls through to invalid → denied: a guest gets
+  // its scoped project/thread tree from `/sidebar-bootstrap`, not the raw list.
+  const projectMatch = path.match(/^\/projects\/([^/]+)(?:\/.*)?$/);
+  if (projectMatch) return { kind: "project", projectId: projectMatch[1] };
 
   if (NON_THREAD_EXACT.has(path)) return { kind: "non-thread" };
   for (const prefix of NON_THREAD_PREFIXES) {
@@ -137,44 +157,61 @@ export function computeAuthz(
   }));
 
   const classified = classifyPath(path);
+  const mutating = isMutatingMethod(method);
+  const allow = (): AuthzResult => ({
+    allowed: true,
+    thread_scope,
+    project_scope,
+    perms,
+  });
+  const deny = (reason: string): AuthzResult => ({
+    allowed: false,
+    thread_scope,
+    project_scope,
+    perms,
+    reason,
+  });
 
-  if (classified.kind === "invalid") {
-    return {
-      allowed: false,
-      thread_scope,
-      project_scope,
-      perms,
-      reason: `unrecognized path: ${path || "(empty)"}`,
-    };
-  }
+  switch (classified.kind) {
+    case "invalid":
+      return deny(`unrecognized path: ${path || "(empty)"}`);
 
-  if (classified.kind === "non-thread") {
-    // Always allowed; the worker's response filters do the per-scope shaping.
-    return { allowed: true, thread_scope, project_scope, perms };
-  }
+    case "non-thread":
+      // Guests may READ the worker-shaped bootstrap endpoints, never mutate
+      // them. Deny by default for any mutating method so a guest cannot POST to
+      // another plugin's RPC or write to plugin-settings/hosts (issue 23).
+      if (mutating) return deny(`guest may not ${method} ${path}`);
+      return allow();
 
-  // Thread path: allow iff the thread is in scope; mutating methods need write.
-  const { threadId } = classified;
-  const share = token.shares.find((s) => s.thread_id === threadId);
-  if (!share) {
-    return {
-      allowed: false,
-      thread_scope,
-      project_scope,
-      perms,
-      reason: `thread ${threadId} not in token scope`,
-    };
+    case "project":
+      // Project metadata is read-only for guests, and only for a project the
+      // token actually shares (issue 24).
+      if (mutating) return deny(`guest may not ${method} ${path}`);
+      if (!project_scope.includes(classified.projectId)) {
+        return deny(`project ${classified.projectId} not in token scope`);
+      }
+      return allow();
+
+    case "thread": {
+      const { threadId, rest } = classified;
+      const share = token.shares.find((s) => s.thread_id === threadId);
+      if (!share) return deny(`thread ${threadId} not in token scope`);
+      if (mutating) {
+        // The ONLY mutation a guest may perform is `POST /threads/{t}/send`
+        // with write (SPEC §"Mutation gate"). Every other mutating thread
+        // subpath — delete, abort, config — is denied even for a write guest
+        // (issue 23).
+        const isSend = method.toUpperCase() === "POST" && rest === "/send";
+        if (!isSend) {
+          return deny(`guest may only POST /threads/${threadId}/send`);
+        }
+        if (share.perm !== "write") {
+          return deny(`write permission required on thread ${threadId}`);
+        }
+      }
+      return allow();
+    }
   }
-  if (isMutatingMethod(method) && share.perm !== "write") {
-    return {
-      allowed: false,
-      thread_scope,
-      project_scope,
-      perms,
-      reason: `write permission required on thread ${threadId}`,
-    };
-  }
-  return { allowed: true, thread_scope, project_scope, perms };
 }
 
 // ---------------------------------------------------------------------------

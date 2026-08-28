@@ -43,15 +43,35 @@ describe("isMutatingMethod", () => {
 });
 
 describe("classifyPath", () => {
-  it("classifies thread paths and extracts the id, with or without /api/v1", () => {
+  it("classifies thread paths and extracts id + rest, with or without /api/v1", () => {
     expect(classifyPath("/api/v1/threads/t1/output")).toEqual({
       kind: "thread",
       threadId: "t1",
+      rest: "/output",
     });
     expect(classifyPath("/threads/t9")).toEqual({
       kind: "thread",
       threadId: "t9",
+      rest: "",
     });
+  });
+
+  it("classifies a project-nested thread path as a thread (issue 24)", () => {
+    expect(classifyPath("/api/v1/projects/p1/threads/t1/send")).toEqual({
+      kind: "thread",
+      threadId: "t1",
+      rest: "/send",
+    });
+  });
+
+  it("classifies a specific project as project, scoped later (issue 24)", () => {
+    expect(classifyPath("/api/v1/projects/p1")).toEqual({
+      kind: "project",
+      projectId: "p1",
+    });
+    // `/projects/{p}/threads` (no thread id) lists threads in a project → still
+    // project-scoped, not a thread path.
+    expect(classifyPath("/projects/p2/threads").kind).toBe("project");
   });
 
   it("classifies the enumerated non-thread endpoints as pass-through", () => {
@@ -61,14 +81,14 @@ describe("classifyPath", () => {
       "/api/v1/plugins",
       "/hosts",
       "/api/v1/plugin-settings/anything",
-      "/api/v1/projects/p1",
     ]) {
       expect(classifyPath(p).kind).toBe("non-thread");
     }
   });
 
-  it("classifies unrecognized paths as invalid", () => {
+  it("classifies unrecognized paths and the bare project list as invalid", () => {
     expect(classifyPath("/api/v1/settings/secrets").kind).toBe("invalid");
+    expect(classifyPath("/api/v1/projects").kind).toBe("invalid");
     expect(classifyPath("").kind).toBe("invalid");
     expect(classifyPath("/").kind).toBe("invalid");
   });
@@ -167,6 +187,98 @@ describe("authorize", () => {
     });
     expect(res.allowed).toBe(false);
     expect(res.reason).toMatch(/write permission required/);
+  });
+});
+
+describe("deny-by-default (issues 23, 24)", () => {
+  it("read guest cannot POST to another plugin's RPC", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/plugins/automations/rpc/create",
+      method: "POST",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/may not POST/);
+  });
+
+  it("write guest cannot DELETE a thread — only /send is allowed", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "write" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/threads/t1",
+      method: "DELETE",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/only POST \/threads\/t1\/send/);
+  });
+
+  it("write guest cannot POST a non-send thread subpath (e.g. /abort)", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "write" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/threads/t1/abort",
+      method: "POST",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/only POST/);
+  });
+
+  it("guest cannot DELETE a project", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "write", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/projects/p1",
+      method: "DELETE",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/may not DELETE/);
+  });
+
+  it("in-scope project GET is allowed", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/projects/p1",
+      method: "GET",
+    });
+    expect(res.allowed).toBe(true);
+  });
+
+  it("out-of-scope project GET is denied (issue 24)", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/projects/p2",
+      method: "GET",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/project p2 not in token scope/);
+  });
+
+  it("project-nested out-of-scope thread is gated as a thread, not allowed", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/projects/p1/threads/t2",
+      method: "GET",
+    });
+    expect(res.allowed).toBe(false);
+    expect(res.reason).toMatch(/thread t2 not in token scope/);
   });
 });
 

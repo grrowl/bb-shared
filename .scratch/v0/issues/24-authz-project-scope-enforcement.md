@@ -1,4 +1,4 @@
-Status: open
+Status: in-progress
 Type: bug
 Severity: high
 Blocked by:
@@ -51,3 +51,25 @@ actual server-contract routes** whether thread content is reachable under a
 ## Comments
 
 ## Answer
+
+Authz decision fixed in `plugin/authz/authz.ts` (the out-of-scope read leak,
+the critical part):
+
+- `/projects` is removed from `NON_THREAD_PREFIXES`. `classifyPath` now returns
+  a `project` kind for `/projects/{p}` (and subpaths), and `computeAuthz` allows
+  it only if `p` is in `project_scope`, GET only. An out-of-scope
+  `GET /api/v1/projects/{p}` is now denied, and the worker enforces the deny at
+  `stages/authz.ts:195`.
+- The latent escalation is closed: `classifyPath` matches a project-nested
+  thread path (`/projects/{p}/threads/{t}`) as a `thread`, so it runs through
+  the thread scope + perm gate instead of the project/non-thread branch. Tested.
+- A bare `/projects` list (no id) now classifies as invalid → denied; a guest
+  gets its scoped tree from `/sidebar-bootstrap`, not the raw list.
+
+REMAINING (worker-side, keeps this ticket in-progress): the worker still needs a
+response FILTER for an in-scope `GET /api/v1/projects/{p}` to SHAPE the body
+(strip `sources`, filter `threads`/`sections` to the token's scope), parallel to
+the sidebar-bootstrap filter. Authz now allows an in-scope project, but the
+worker forwards the full response, so an in-scope project response still exposes
+its `sources` and sibling threads. That filter lives in
+`worker/src/stages/response-filters.ts` and is not done here.

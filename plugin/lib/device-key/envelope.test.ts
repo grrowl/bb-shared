@@ -65,6 +65,15 @@ describe("secret envelope", () => {
     );
   });
 
+  it("rejects a truncated auth tag (no downgraded forgery resistance)", () => {
+    const k = key();
+    const env = sealSecret(k, "secret");
+    const short = Buffer.from(env.tag, "base64").subarray(0, 4);
+    expect(() =>
+      openSecret(k, { ...env, tag: short.toString("base64") }),
+    ).toThrow(SecretEnvelopeError);
+  });
+
   it("gates on the version/alg header", () => {
     const k = key();
     const env = sealSecret(k, "secret");

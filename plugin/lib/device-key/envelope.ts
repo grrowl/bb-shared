@@ -37,6 +37,10 @@ export const SECRET_KEY_BYTES = 32;
 /** GCM nonce/IV length (bytes) — the 96-bit recommended size. */
 const NONCE_BYTES = 12;
 
+/** GCM auth-tag length (bytes). Node's decipher accepts truncated tags, which
+ * would let a kv-tampering attacker shrink forgery resistance — reject short. */
+const TAG_BYTES = 16;
+
 /** Versioned, self-describing ciphertext envelope for one secret string. */
 export interface SecretEnvelope {
   v: typeof SECRET_ENVELOPE_VERSION;
@@ -102,6 +106,9 @@ export function openSecret(key: Buffer, env: SecretEnvelope): string {
   const tag = Buffer.from(env.tag, "base64");
   if (nonce.length !== NONCE_BYTES) {
     throw new SecretEnvelopeError("malformed secret envelope: bad nonce");
+  }
+  if (tag.length !== TAG_BYTES) {
+    throw new SecretEnvelopeError("malformed secret envelope: bad tag");
   }
   try {
     const decipher = createDecipheriv("aes-256-gcm", key, nonce);

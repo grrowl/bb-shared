@@ -144,8 +144,14 @@ function useClaimUrl(): string | undefined {
   return claimUrl;
 }
 
-function WorkerStatusPill({ state }: { state: WorkerState }) {
-  const { label, dotClass, title } = describeWorker(state);
+function WorkerStatusPill({
+  state,
+  hasShares,
+}: {
+  state: WorkerState;
+  hasShares: boolean;
+}) {
+  const { label, dotClass, title } = describeWorker(state, hasShares);
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2.5 py-1 text-xs text-muted-foreground"
@@ -158,11 +164,22 @@ function WorkerStatusPill({ state }: { state: WorkerState }) {
   );
 }
 
-function describeWorker(state: WorkerState): {
+// Before any share exists there is no worker to expect, so the pill reads as a
+// calm empty state rather than a fault. It only turns to an error color when a
+// worker that should be running is not answering.
+function describeWorker(
+  state: WorkerState,
+  hasShares: boolean,
+): {
   label: string;
   dotClass: string;
   title: string;
 } {
+  const noShares = {
+    label: "No shares yet",
+    dotClass: "bg-muted-foreground/50",
+    title: "Share a thread to set up your worker",
+  };
   switch (state.kind) {
     case "loading":
       return {
@@ -171,27 +188,30 @@ function describeWorker(state: WorkerState): {
         title: "Contacting the share worker",
       };
     case "not-deployed":
-      return {
-        label: "Worker not deployed",
-        dotClass: "bg-muted-foreground/50",
-        title:
-          "The Cloudflare worker deploys lazily on first mint (issue 07). No worker is live yet.",
-      };
+      return hasShares
+        ? {
+            label: "Setting up worker…",
+            dotClass: "bg-muted-foreground/50 animate-pulse",
+            title: "Your share worker is being set up. This happens once.",
+          }
+        : noShares;
     case "error":
-      return {
-        label: "Worker unreachable",
-        dotClass: "bg-destructive",
-        title: state.message,
-      };
+      return hasShares
+        ? {
+            label: "Worker not responding",
+            dotClass: "bg-destructive",
+            title: state.message,
+          }
+        : noShares;
     case "ready":
       return state.status.healthy
         ? {
-            label: "Worker healthy",
+            label: "Worker live",
             dotClass: "bg-emerald-500",
-            title: state.status.url ?? "Worker is healthy",
+            title: state.status.url ?? "Worker is live",
           }
         : {
-            label: "Worker unhealthy",
+            label: "Worker having trouble",
             dotClass: "bg-amber-500",
             title: state.status.url ?? "Worker reachable but unhealthy",
           };
@@ -209,18 +229,13 @@ function WorkerClaimNudge() {
   const navigate = useBbNavigate();
   const claimUrl = useClaimUrl();
 
-  if (claimUrl === undefined) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        No claim link yet — one appears here once a worker is deployed, letting
-        you keep it alive past its 60-minute trial.
-      </p>
-    );
-  }
+  // Only show the nudge once a worker exists and there is a real claim link.
+  // Before that there is nothing to claim, so the line stays hidden.
+  if (claimUrl === undefined) return null;
 
   return (
     <p className="text-xs text-muted-foreground">
-      Unclaimed workers expire after 60 minutes.{" "}
+      This worker is temporary and is removed 60 minutes after it starts.{" "}
       <button
         type="button"
         onClick={() => navigate.openUrl(claimUrl)}
@@ -347,7 +362,7 @@ function RenameableLabel({
       type="button"
       onClick={startEdit}
       className="group inline-flex items-center gap-1.5 rounded-sm text-sm font-medium hover:text-foreground"
-      title="Rename token"
+      title="Rename link"
     >
       <span className="truncate">{token.label}</span>
       <HugeiconsIcon
@@ -461,7 +476,7 @@ function ShareRow({
             )
           }
           className="size-7 text-muted-foreground hover:text-destructive"
-          aria-label="Remove thread from token"
+          aria-label="Remove thread from link"
         >
           <HugeiconsIcon icon={Delete02Icon} className="size-3.5" aria-hidden />
         </Button>
@@ -535,8 +550,8 @@ function TokenCard({
           <span
             title={
               mintedUrl === undefined
-                ? "The guest URL is only shown once, at mint time — re-mint to get a fresh link."
-                : "Copy the guest URL"
+                ? "The guest link is shown once, when you create it. Create again to get a fresh link."
+                : "Copy the guest link"
             }
           >
             <Button
@@ -559,7 +574,7 @@ function TokenCard({
             size="icon"
             onClick={() => setConfirmOpen(true)}
             className="size-7 text-muted-foreground hover:text-destructive"
-            aria-label={`Delete token ${token.label}`}
+            aria-label={`Delete link ${token.label}`}
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-4" aria-hidden />
           </Button>
@@ -568,7 +583,7 @@ function TokenCard({
 
       {token.shares.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          No threads shared on this token yet.
+          No threads on this link yet.
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -587,11 +602,11 @@ function TokenCard({
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete token?</AlertDialogTitle>
+            <AlertDialogTitle>Delete this link?</AlertDialogTitle>
             <AlertDialogDescription>
               &ldquo;{token.label}&rdquo; and its {token.shares.length}{" "}
-              {token.shares.length === 1 ? "share" : "shares"} will be revoked
-              immediately. Any guest URL for this token stops working.
+              {token.shares.length === 1 ? "share" : "shares"} stop working
+              right away. Anyone using this link loses access.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -653,7 +668,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
       if (clipboard !== undefined) {
         try {
           await clipboard.writeText(url);
-          showFlash("New token minted — link copied");
+          showFlash("Link created. Copied.");
         } catch {
           showFlash(url);
         }
@@ -683,7 +698,10 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               <h1 className="text-sm font-semibold">Shared threads</h1>
             </div>
             <div className="flex items-center gap-2">
-              <WorkerStatusPill state={worker.state} />
+              <WorkerStatusPill
+                state={worker.state}
+                hasShares={(tokens?.length ?? 0) > 0}
+              />
               <Button
                 variant="default"
                 size="sm"
@@ -696,7 +714,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
                   className="size-3.5"
                   aria-hidden
                 />
-                {minting ? "Minting…" : "Mint new"}
+                {minting ? "Creating…" : "Create link"}
               </Button>
             </div>
           </div>
@@ -716,7 +734,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
           {error !== null ? (
             <div className="flex flex-col items-start gap-2">
               <p className="text-xs text-destructive">
-                Couldn&rsquo;t load tokens: {error}
+                Couldn&rsquo;t load your links: {error}
               </p>
               <Button
                 variant="outline"
@@ -728,10 +746,10 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               </Button>
             </div>
           ) : tokens === null ? (
-            <p className="text-xs text-muted-foreground">Loading tokens…</p>
+            <p className="text-xs text-muted-foreground">Loading links…</p>
           ) : tokens.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No tokens yet. Mint one above, or use the Share button in any
+              No links yet. Create one above, or use the Share button in any
               thread header.
             </p>
           ) : (

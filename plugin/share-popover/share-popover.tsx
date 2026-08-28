@@ -17,7 +17,7 @@
 // - The "Mint new share" section calls `mintToken` → `addShare` and copies
 //   the returned guest URL to the clipboard.
 //
-// The "Manage all shares →" link routes to this plugin's `tokens` nav panel,
+// The "Manage all links" link routes to this plugin's `tokens` nav panel,
 // which will be fleshed out by issue 16. The panel path is registered in
 // `app.tsx`; `useBbNavigate().toPluginPanel("tokens")` resolves to
 // `/plugins/shared/tokens` at runtime.
@@ -163,7 +163,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         });
       } catch (err: unknown) {
         setActionError(
-          `Token minted but share failed: ${
+          `Link created, but adding this thread failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -176,7 +176,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
       if (clipboard !== undefined) {
         try {
           await clipboard.writeText(url);
-          showFlash("Link copied to clipboard");
+          showFlash("Link copied.");
         } catch {
           showFlash(url);
         }
@@ -207,10 +207,10 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         ) : null}
       </div>
 
-      {/* Existing tokens ------------------------------------------------ */}
+      {/* Add this thread to a link you already made -------------------- */}
       <section className="flex flex-col gap-2">
         <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Existing tokens
+          Add to a link
         </h4>
         {loadError !== null ? (
           <p className="text-xs text-destructive">{loadError}</p>
@@ -218,7 +218,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
           <p className="text-xs text-muted-foreground">Loading…</p>
         ) : tokens.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No tokens yet. Mint one below.
+            No share link yet. Create one below to share this thread.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -267,10 +267,10 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         )}
       </section>
 
-      {/* Mint new share ------------------------------------------------- */}
+      {/* Create a new link --------------------------------------------- */}
       <section className="flex flex-col gap-2 border-t border-border/60 pt-3">
         <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Mint new share
+          New link
         </h4>
         <div className="flex items-center justify-between gap-2">
           <div
@@ -303,7 +303,11 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
             onClick={() => void handleMint()}
             className="h-7 px-3 text-xs"
           >
-            {minting ? "Creating…" : "Create + copy"}
+            {minting
+              ? "Creating…"
+              : tokens && tokens.length > 0
+                ? "Create new link"
+                : "Create link"}
           </Button>
         </div>
         {actionError !== null ? (
@@ -317,7 +321,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         onClick={handleManageAll}
         className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline"
       >
-        Manage all shares →
+        Manage all links
       </button>
     </div>
   );

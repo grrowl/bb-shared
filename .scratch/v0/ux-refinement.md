@@ -130,6 +130,27 @@ Copy:
   Anyone using it loses access."
 - Empty state: "No threads on this link yet."
 
+## Implementation status (2026-08-28)
+
+Landed (owner-side frontend, in `nav-panel/tokens-panel.tsx` and
+`share-popover/share-popover.tsx`): the link/create vocabulary sweep; surface 1
+copy (create button, flash, copy-link tooltip); surface 2 pill states with the
+"No shares yet" calm empty state and the claim nudge gated to when a worker
+exists; surface 3 vocab and the contextual "Create link" vs "Create new link"
+button and reworded section headers; surface 5 delete confirm, empty state, and
+labels. tsc clean, 81 plugin tests pass, plugin reinstalled.
+
+Deferred, because each needs server, contract, worker, or bb-API work, or a
+visual check in the running app:
+- Surface 1 mint-deploys-first (worker lifecycle; ties to 27/28).
+- Surface 3 full combined-list visual restructure (needs a look in the app).
+- Surface 4 copy-a-link-again (hold the raw link in memory server-side; new
+  RPC/contract), and the persistence model (issue 28).
+- Surface 5 thread titles resolved in listTokens (server + contract + a bb
+  thread-title lookup), and Copy-URL-always-enabled (depends on surface 4).
+- Surface 6 in full (guest read-composer hide, ended-access page) — guest-side
+  shim/worker, and untestable while the tunnel is a 503 stub (issue 27).
+
 ## Surface 6. What the guest sees when they open the link
 
 Grounding: the chrome shim today only hides four owner controls (New thread,

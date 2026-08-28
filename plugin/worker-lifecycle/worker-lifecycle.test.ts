@@ -151,6 +151,8 @@ interface Harness {
 function makeHarness(opts: {
   hasTokens?: boolean;
   healthy?: boolean;
+  /** Force the health probe to return a specific HTTP status (L2 tests). */
+  healthStatus?: number;
   deployResult?: () => DeployResult;
   deployThrows?: boolean;
 } = {}): Harness {
@@ -190,6 +192,8 @@ function makeHarness(opts: {
     createTunnel,
     now: () => 1000,
     fetchImpl: (async () => {
+      if (opts.healthStatus !== undefined)
+        return new Response("", { status: opts.healthStatus });
       if (opts.healthy ?? true) return new Response("", { status: 401 });
       throw new Error("connect refused");
     }) as unknown as typeof fetch,
@@ -313,6 +317,33 @@ describe("WorkerLifecycle", () => {
     expect(h.kv.store.has("worker-record")).toBe(false);
     expect(h.lifecycle.getStatus().state).toBe("idle");
     expect(h.tunnels).toHaveLength(0);
+  });
+
+  // L2 (ticket 21): a 5xx from the worker URL is a broken/hostile proxy, not a
+  // live worker. It must NOT count as healthy — the persisted record is wiped
+  // (and would redeploy), never reused.
+  for (const status of [500, 502, 503]) {
+    it(`L2: a ${status} health response is treated as unhealthy (broken proxy, not "alive")`, async () => {
+      const h = makeHarness({ healthStatus: status });
+      await h.kv.set("worker-record", sampleRecord());
+      await h.lifecycle.start(AbortSignal.abort()); // bootstrap → healthCheck
+
+      expect(h.kv.store.has("worker-record")).toBe(false);
+      expect(h.lifecycle.getStatus().state).toBe("idle");
+      expect(h.tunnels).toHaveLength(0);
+    });
+  }
+
+  it("L2: the worker's own 401 liveness signal still counts as healthy", async () => {
+    // Requiring `response.ok` would wrongly wipe a live worker (it answers
+    // GET / with 401 token_missing); sub-500 keeps that liveness signal healthy.
+    const h = makeHarness({ healthStatus: 401 });
+    await h.kv.set("worker-record", sampleRecord());
+    await h.lifecycle.start(AbortSignal.abort());
+
+    expect(h.kv.store.has("worker-record")).toBe(true);
+    expect(h.lifecycle.getStatus().state).toBe("live");
+    expect(h.tunnels).toHaveLength(1);
   });
 
   it("rotates the tunnel + secret on redeploy", async () => {

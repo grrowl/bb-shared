@@ -53,10 +53,16 @@ function bearerFrom(header: string | null): string | null {
 }
 
 /**
- * Constant-time equality on same-length strings. On a length mismatch we
- * still XOR against `presented` so timing does not distinguish "bearer
- * missing" from "bearer wrong length". A configured TUNNEL_SECRET of "" is
- * treated as unset — never authenticate.
+ * Constant-time equality on same-length strings. The XOR loop accumulates into
+ * `diff` and returns only after the FULL pass — it never short-circuits on the
+ * first differing character, so there is no per-character timing oracle.
+ *
+ * On a length mismatch we early-return `false` before the loop. This leaks (by
+ * timing) only whether the presented bearer had the right *length* — NOT its
+ * contents. That is not a per-char oracle, and it is not exploitable here: the
+ * secret length is fixed at 32 bytes (43 base64url chars), so a length mismatch
+ * leaks only length, which is already public via the accepted secret shape. A
+ * configured TUNNEL_SECRET of "" is treated as unset — never authenticate.
  */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length === 0) return false;

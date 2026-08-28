@@ -364,9 +364,22 @@ export class WorkerLifecycle {
   }
 
   /**
-   * Cheapest liveness probe (worker/README.md): any HTTP response — even the
-   * expected 401 `token_missing` — means the script is deployed and reachable.
-   * Only a network-level failure (or timeout) counts as dead.
+   * Liveness probe (worker/README.md): a live worker answers `GET /` (no token)
+   * with 401 `token_missing` — the script ran, so it is deployed and reachable.
+   *
+   * L2 (ticket 21): sharpened from "any non-throwing response is alive" to
+   * "alive iff status < 500". A broken or hostile proxy answering 502/503 at the
+   * worker URL — or a captive portal / on-path MITM returning a 5xx error page
+   * (see L3, no TLS pinning) — must NOT count as "worker OK", or the plugin
+   * suppresses the wipe-and-redeploy that would rotate away from a dead/hostile
+   * endpoint. So a 5xx (and any network failure / timeout) → unhealthy.
+   *
+   * We deliberately accept ANY sub-500 status rather than only 2xx, because the
+   * worker's real liveness signal for this probe is a 401, not a 200: requiring
+   * `response.ok` would mark every live worker dead and spin the redeploy loop
+   * forever. Sub-500 keeps the 401 signal healthy while still rejecting the
+   * broken-proxy 5xx this finding is about (and stays robust if `GET /` ever
+   * serves a real 2xx once the guest proxy is wired up).
    */
   private async healthCheck(url: string): Promise<boolean> {
     const fetchImpl = this.deps.fetchImpl ?? fetch;
@@ -374,12 +387,12 @@ export class WorkerLifecycle {
     const timer = setTimeout(() => controller.abort(), this.healthTimeoutMs);
     timer.unref?.();
     try {
-      await fetchImpl(new URL("/", url).toString(), {
+      const response = await fetchImpl(new URL("/", url).toString(), {
         method: "GET",
         redirect: "manual",
         signal: controller.signal,
       });
-      return true;
+      return response.status < 500;
     } catch {
       return false;
     } finally {

@@ -45,15 +45,24 @@
 //      KV or the deploy response. The secret is an owner→worker proof, not a
 //      worker→owner proof; a rogue worker that lacks the secret simply 401s the
 //      dial (fail-closed), and one that somehow HAS the secret already owns the
-//      account. Residual gap for review: we do not pin the worker's TLS cert /
-//      identity beyond the `*.workers.dev` origin CF assigns us.
+//      account. Residual gap (L3, accepted for v0): we do not pin the worker's
+//      TLS cert / identity beyond the `*.workers.dev` origin CF assigns us. An
+//      attacker with control of CF's `*.workers.dev` subdomain assignment (i.e.
+//      CF account control) could MITM. This is considered inside the CF-trust
+//      boundary. v1 could add pinning by capturing the initial TLS certificate
+//      fingerprint on first handshake and rejecting drift.
 //   2. SECRET LEAK FROM DEPLOY LOGS / ENV INSPECTION. Mitigations: uploaded as
 //      a `secret_text` binding (CF stores it encrypted, omits it from script
 //      GETs) rather than plain-text; never written to `bb.log`; never included
-//      in `getWorkerStatus`; never placed in a URL or query string. Residual:
-//      it lives in plugin KV (bb.db) in plaintext, readable by anyone with
-//      local disk access — acceptable under v0's local-trust model (same trust
-//      boundary as the CF apiToken the SPEC already persists there).
+//      in `getWorkerStatus`; never placed in a URL or query string. Residual
+//      (M5): it lives in plugin KV (bb.db) in plaintext, readable by anyone
+//      with local disk access — acceptable under v0's local-trust model. But
+//      note the tunnel secret is NOT the crown-jewel item at rest: the CF
+//      `apiToken` persisted alongside it is. An attacker with the apiToken can
+//      redeploy a MALICIOUS worker under our own account name (one that logs
+//      the tunnel secret and exfiltrates guest traffic), making this secret's
+//      careful rotation moot — so any at-rest protection must cover `apiToken`
+//      first. See SPEC.md §"Trust model".
 //   3. REPLAY ACROSS REDEPLOYS. Rotation (above) means a secret captured from
 //      generation N cannot dial generation N+1's worker: different account,
 //      different secret. There is no long-lived secret to replay.
@@ -63,11 +72,24 @@
 //      A misrouted deploy would plant a fresh secret on the wrong worker and
 //      the mismatched tunnel would 401 — fail-closed, no cross-owner access.
 //
-// NOT DEFENDED (documented, out of scope for v0)
-//   - Local-disk compromise (KV plaintext) — see (2) residual.
+// NOT DEFENDED (documented, out of scope for v0 — see SPEC.md §"Trust model")
+//   - Local-disk compromise (KV plaintext) — see (2) residual. The crown-jewel
+//     at-rest item is the CF `apiToken`, not this tunnel secret: whoever reads
+//     the KV can redeploy a malicious worker under our account and the tunnel
+//     secret's rotation becomes irrelevant. A malicious co-installed bb plugin
+//     with local disk access is inside this same boundary — installing an
+//     untrusted plugin is equivalent to handing over the CF account.
+//   - No TLS-identity pinning beyond `*.workers.dev` — see (1) L3 residual.
 //   - A compromised CF temp account whose apiToken is stolen mid-life — the
 //     attacker could redeploy; bounded by the 60-min TTL and detected on the
 //     next health check (which re-bootstraps fresh).
+//   - Stale prior-generation worker (L4). On redeploy the new worker gets a
+//     fresh account + secret; the old worker runs on its old secret until CF
+//     reclaims its unclaimed temp account (≤60 min). The prior-gen worker has
+//     no live tunnel to bb (the secret is rotated bb-side on redeploy), so the
+//     residual reduces to: guest URLs against the old worker return 5xx until
+//     CF cleans it up (≤60 min unclaimed). Guest URLs also change on redeploy,
+//     so the window is narrow and self-closing.
 // ===========================================================================
 import { randomBytes } from "node:crypto";
 

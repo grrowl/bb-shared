@@ -271,6 +271,52 @@ when a token is mutated elsewhere. Modeled on `plugins/tasks/app.tsx`
 No modal API exists in bb — for confirm-delete dialogs, use the vendored
 shadcn `AlertDialog` inside the panel.
 
+## Trust model
+
+v0 draws its trust boundary at the **owner's local machine**. Everything the
+plugin persists — the CF temp-account `apiToken`, the tunnel handshake secret,
+and the `claim.url` — lives as plaintext JSON in `bb.storage.kv` (bb.db).
+Anyone (or anything) with local read access to that store is inside the trust
+boundary and is, by construction, already able to compromise the deployment.
+This is deliberate for v0 and stated here so it is not mistaken for an
+oversight. (Findings M5, L3, L4 from `research/tunnel-secret-review.md`.)
+
+**Local-trust boundary.** The following are assumed trusted in v0:
+
+- The owner's local disk / `bb.db` (KV plaintext at rest).
+- Every bb plugin the owner installs — `bb.storage.kv` isolation is per-plugin
+  at the API layer, but a co-installed *malicious* plugin with local disk
+  access sits inside the same boundary. Installing an untrusted bb plugin is
+  therefore equivalent to handing over the CF account.
+- The owner's network egress path (no TLS-identity pinning — see below).
+
+**`apiToken` is the crown-jewel item, not the tunnel secret.** The careful
+per-deploy rotation of the tunnel handshake secret is moot if the CF
+`apiToken` leaks: an attacker holding it can redeploy a **malicious worker
+under our own account name** — one that logs the tunnel secret and exfiltrates
+guest traffic — with no need for the tunnel secret at all. Any at-rest
+protection worth adding should protect `apiToken` first.
+
+**No TLS/identity pinning beyond `*.workers.dev` (L3, accepted residual).** The
+tunnel dials `record.url` over `wss://` and trusts standard web PKI to
+authenticate the CF-assigned `*.workers.dev` origin. An attacker with control
+of CF's `*.workers.dev` subdomain assignment (i.e. CF account control) could
+MITM. This is considered inside the CF-trust boundary. v1 could add pinning by
+capturing the initial TLS certificate fingerprint on first handshake and
+rejecting drift.
+
+**Stale prior-generation worker (L4, accepted residual).** On redeploy the new
+worker gets a fresh account + secret; the prior-gen worker keeps running with
+its old secret until CF reclaims its unclaimed temp account (≤60 min). The
+prior-gen worker has no live tunnel to bb (the secret is rotated bb-side on
+redeploy), so the residual reduces to: guest URLs against the old worker return
+5xx until CF cleans it up (≤60 min unclaimed). Guest URLs also change on
+redeploy, so the window is narrow and self-closing.
+
+**v1 candidates.** Encrypt KV values with a device-tied key (macOS Keychain,
+etc.), prioritising `apiToken`; add TLS-fingerprint pinning; wrap the CF claim
+in a proper OAuth flow.
+
 ## Non-goals
 
 - **Persistent state.** In-memory only in v0; interface designed so a

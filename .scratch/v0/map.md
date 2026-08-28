@@ -63,6 +63,10 @@ Parent: [SPEC.md](../../SPEC.md)
 
 - SPA data-testid stability across bb versions — CI pinned per
   `BB_VERSION`; needs re-run on each bump.
+- v1 candidate: encrypt KV values with a device-tied key (macOS Keychain,
+  etc.), prioritising the CF `apiToken` (the crown-jewel at-rest item — see
+  21 / SPEC §"Trust model"). Also v1 candidates: TLS-fingerprint pinning
+  (L3), best-effort delete of the prior-gen CF account on redeploy (L4).
 
 ## Frontier
 

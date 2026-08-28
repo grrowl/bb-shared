@@ -222,14 +222,23 @@ inject:
 <script>document.documentElement.dataset.bbGuest = "1"</script>
 <style>
   [data-bb-guest] [data-testid="app-sidebar-primary-actions"],
-  [data-bb-guest] [aria-label="Settings"],
-  [data-bb-guest] .plugin-nav-sidebar-items,
-  [data-bb-guest] [aria-label="New thread"] { display: none !important; }
+  [data-bb-guest] [aria-label^="Settings"],
+  [data-bb-guest] [data-testid="plugin-nav-sidebar-items"],
+  [data-bb-guest] [aria-label^="New thread"] { display: none !important; }
 </style>
 ```
 
-Selectors picked from stable `data-testid`s where available; upgrade risk
-is per-bb-version and worth pinning during CI.
+Selectors picked from stable `data-testid`s where available. Two
+non-obvious details (verified against bb `31a190d` during 12's build,
+do not "correct" back to the naive form):
+
+- `plugin-nav-sidebar-items` is a `data-testid`, NOT a CSS class.
+- `Settings` / `New thread` aria-labels are dynamic — bb appends
+  `(⌘,)` when a keyboard shortcut is bound — so exact-match `[aria-label="Settings"]`
+  fails in the common case. Prefix match (`^=`) is required.
+
+Upgrade risk pinned by `scripts/check-chrome-selectors.mjs` against a
+`BB_VERSION`-tracked bb checkout.
 
 ### Route lock-outs
 

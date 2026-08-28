@@ -62,8 +62,8 @@ Parent: [SPEC.md](../../SPEC.md)
 
 ## Frontier
 
-Rounds 1, 2, 3 done. Round 4 in flight (07, 09 ✓, 10 ✓, 12).
-Resolved so far: 01, 02, 03, 04, 05, 06, 08, 09, 10, 11, 14, 15, 16.
+Rounds 1, 2, 3 done. Round 4 in flight (07, 09 ✓, 10 ✓, 12 ✓).
+Resolved so far: 01, 02, 03, 04, 05, 06, 08, 09, 10, 11, 12, 14, 15, 16.
 
 Queued after round 4 completes:
 

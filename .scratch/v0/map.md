@@ -62,19 +62,24 @@ Parent: [SPEC.md](../../SPEC.md)
 
 ## Frontier
 
-Rounds 1, 2, 3 done. Resolved: 01, 02, 03, 04, 05, 06, 08, 11, 14, 15, 16.
-Currently unblocked: **07, 09, 10, 12, 18.**
+Rounds 1, 2, 3 done. Round 4 in flight (07, 09, 10 ✓, 12).
+Resolved so far: 01, 02, 03, 04, 05, 06, 08, 10, 11, 14, 15, 16.
 
-Recommended round 4 (4 parallel):
+Queued after round 4 completes:
 
-- **07** worker lifecycle manager — highest leverage; brings the stack
-  together (deploy + secret provisioning + claim nudge)
-- **09** response filters — guest-scope shaping at the worker
-- **10** mutation gate + route lockouts — delegates to 06's authz
-- **12** SPA chrome shim + CI selector-pin
+- **18** realtime-channels split — cleanup
+- **19** 06 authz: add project_scope — surfaced during 10's work; 09/11
+  need `projectIds` populated and today's authz response has no
+  project field. Small ticket, blocks 09 and 11 from being correct
+  end-to-end (though both compile today).
+- **17** e2e smoke — end-to-end runbook after everything is wired
 
-18 (realtime-channels split — cleanup) queues for whoever finishes
-first. After round 4, only 17 (e2e smoke) remains.
+## Known drift / follow-ups from in-flight work
+
+- 06's `/authz` response has no project scope field, so worker's
+  `GuestScope.projectIds` is empty today. Consumed by 09 (project
+  filtering in sidebar-bootstrap) and 11 (project-detail
+  subscriptions). Fix owned by ticket **19**.
 
 ## Round 3 commit hygiene note
 

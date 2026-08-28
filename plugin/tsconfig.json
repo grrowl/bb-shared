@@ -28,6 +28,8 @@
     "lib",
     "hooks",
     "share-popover",
-    "worker-lifecycle"
+    "nav-panel",
+    "worker-lifecycle",
+    "cf-oauth"
   ]
 }

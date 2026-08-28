@@ -10,7 +10,15 @@
     "isolatedModules": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    // The worker lives outside the npm workspace (its own node_modules), so the
+    // vendored tunnel contract is reached by path rather than a bare install.
+    // Both tsc (bundler resolution) and wrangler's esbuild honour this map.
+    "paths": {
+      "@bb-shared/tunnel-contract": [
+        "../packages/bb-shared-tunnel-contract/src/index.ts"
+      ]
+    }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

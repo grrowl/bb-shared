@@ -15,4 +15,9 @@ export const REALTIME_CHANNELS = {
   tokensChanged: "tokens-changed",
   /** Worker deploy / health transitions. Payload: { url?, healthy }. */
   workerChanged: "worker-changed",
+  /**
+   * Cloudflare OAuth connection transitions (issue 28). Payload:
+   * ConnectionStatus (redacted — account id + live hostname, never a token).
+   */
+  connectionChanged: "connection-changed",
 } as const;

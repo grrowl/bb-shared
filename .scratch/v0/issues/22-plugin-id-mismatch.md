@@ -1,4 +1,4 @@
-Status:
+Status: resolved
 Type: task
 Blocked by: 17
 
@@ -47,3 +47,45 @@ Small ticket — mostly find-and-replace + a test fixture update.
 ## Comments
 
 ## Answer
+
+Executed path (b): mount id is **`shared`** (confirmed — package name
+`bb-plugin-shared`, bb strips the `bb-plugin-` prefix; matches 04's
+`shared@0.1.0 running`). Changed every `bb-shared` URL segment to `shared`
+throughout `plugin/`, `worker/`, `SPEC.md`, and `docs/`. Left `bb-shared` as
+the project/repo name everywhere it means the project (package name, brand,
+`@bb-shared/*` vendored packages, `bb-shared-worker`, etc.) — untouched.
+
+**Functional fix** (the actual bug):
+- `worker/src/stages/authz.ts` — `AUTHZ_ENDPOINT_PATH` constant now
+  `/api/v1/plugins/shared/http/authz`. This is the string the worker pulls on
+  every guest request; it previously hit a non-existent mount → deny-closed
+  403 on every request.
+- `worker/tests/authz.test.ts` — the hardcoded pathname assertion updated to
+  `shared` (the test that pins the URL the worker calls).
+
+**Doc/comment references updated:**
+- `plugin/authz/authz.ts` — authz-URL comment; also fixed the stale
+  `bb plugin token bb-shared` → `bb plugin token shared` (same id-mismatch
+  class — that CLI arg is the mount id, would have failed provisioning).
+- `plugin/share-popover/share-popover.tsx`, `plugin/nav-panel/tokens-panel.tsx`
+  — `/plugins/shared/tokens` in registration comments.
+- `worker/src/stages/authz.ts` — header-comment authz URL.
+- `SPEC.md` §Owner UI — navPanel path `/plugins/shared/tokens`.
+- `docs/e2e-runbook.md` — the "Drift" warning block, the nav-panel note, and
+  the troubleshooting row were **reframed as resolved** (not blind-swapped —
+  a literal swap would have made "worker calls X while plugin mounts X" read
+  as a contradiction). They now document that ticket 22 aligned both to
+  `shared`, with `shared`-based sanity-check curls.
+
+Not touched: `.scratch/v0/issues/*` ticket bodies (06, 10, 16, 17, 20, etc.) —
+outside the task's grep scope (`plugin/ worker/` + `SPEC.md docs/`); they are
+historical records and 20 is editing some concurrently. No new `bb-shared` URL
+refs from 20 were present at grep time.
+
+**Verify — all green:**
+- `grep -r '/plugins/bb-shared/' plugin/ worker/` → 0 hits.
+- `grep -r '/plugins/bb-shared/' SPEC.md docs/` → 0 hits.
+- `grep -rn 'plugins/bb-shared' plugin/ worker/ SPEC.md docs/` → 0 hits.
+- plugin: `tsc --noEmit` clean; `vitest` 62/62 pass; `bb plugin build .` clean.
+- worker: `tsc --noEmit` clean; `vitest` 158/158 pass;
+  `wrangler deploy --dry-run` builds (29.77 KiB).

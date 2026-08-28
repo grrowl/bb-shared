@@ -1,6 +1,6 @@
 // bb-plugin-shared — the token management console (issue 16).
 //
-// Registered as the `navPanel` at `/plugins/bb-shared/tokens` (see `app.tsx`).
+// Registered as the `navPanel` at `/plugins/shared/tokens` (see `app.tsx`).
 // It is the full-fidelity counterpart to issue 15's quick-share popover:
 //
 // - Tokens are listed grouped by token (each a card). Per token: an inline-

@@ -38,32 +38,25 @@ The npm package is `bb-plugin-shared`, so **bb derives the runtime plugin id as
 04's own verification: `bb plugin install` reported **`shared@0.1.0 running`**,
 and the scaffold's sanity-check curl hits `/api/v1/plugins/**shared**/rpc/…`.
 
-> **⚠ Drift — plugin id `shared` vs `bb-shared` (verify first, it can fail the whole flow).**
-> Several places — the SPEC, and the authz/worker code from issues 06, 10, 16 —
-> refer to the mount as **`bb-shared`**, e.g. the worker's per-request authz
-> call is written as `GET /api/v1/plugins/**bb-shared**/http/authz` (issue 10),
-> and the SPEC's nav panel path is `/plugins/bb-shared/tokens`. But the plugin
-> actually mounts under **`shared`** (from the package name), and issue 04's
-> scaffold registered the nav panel at `/plugins/shared/tokens`.
+> **✅ Plugin id `shared` — reconciled (ticket 22).**
+> The plugin mounts under **`shared`** (bb strips the `bb-plugin-` prefix from
+> package name `bb-plugin-shared` — confirmed by 04's `shared@0.1.0 running`).
+> Every URL path in the worker and plugin now uses `shared`: the per-request
+> authz call is `GET /api/v1/plugins/shared/http/authz` and the nav panel is
+> `/plugins/shared/tokens`. `bb-shared` remains the project/repo name only.
 >
-> If the worker calls `/api/v1/plugins/bb-shared/http/authz` while the plugin
-> mounts the route at `/api/v1/plugins/shared/http/authz`, **every guest request
-> fails authz closed → 403** and nothing works. Before running the walk-through,
-> confirm the mounted id and reconcile the worker's authz URL to match:
+> Earlier drafts (SPEC + issues 06, 10, 16) wrote these paths as `bb-shared`,
+> which would have made the worker call a non-existent authz endpoint → every
+> guest request fails authz closed → **403**, nothing works. Ticket 22 fixed
+> all such references. Sanity-check the live mount before the walk-through:
 >
 > ```
-> bb plugin list                 # note the exact id in the "running" line
-> # sanity-check the RPC + authz mounts against the REAL id (substitute below):
-> curl -sS -X POST http://127.0.0.1:38886/api/v1/plugins/<id>/rpc/listTokens \
+> bb plugin list                 # expect: shared@0.1.0 running
+> curl -sS -X POST http://127.0.0.1:38886/api/v1/plugins/shared/rpc/listTokens \
 >      -H 'content-type: application/json' -d 'null'
-> curl -sS "http://127.0.0.1:38886/api/v1/plugins/<id>/http/authz?token=x&path=/system/config&method=GET" \
->      -H "authorization: Bearer $(bb plugin token <id>)"
+> curl -sS "http://127.0.0.1:38886/api/v1/plugins/shared/http/authz?token=x&path=/system/config&method=GET" \
+>      -H "authorization: Bearer $(bb plugin token shared)"
 > ```
->
-> Whatever `<id>` `bb plugin list` prints is the truth. If it is `shared`, the
-> `bb-shared` strings in the worker's authz stage must resolve to `shared` at
-> deploy time, or fix them before deploying. **This is the single most likely
-> thing to break a first run.** Flagged for a v0.1 fix (align on one id).
 
 ### Env / config
 
@@ -120,11 +113,10 @@ The frontend bundle is picked up on the next SPA reload.
   thread is open).
 
 - **Nav panel** — the token management console is reachable at the plugin nav
-  panel **`tokens`** (title "Shared threads"). SPEC/16 call this
-  `/plugins/bb-shared/tokens`; with the real plugin id it is
+  panel **`tokens`** (title "Shared threads"), which resolves to
   **`/plugins/shared/tokens`** (issue 04 registered `path: "tokens"` under the
-  `shared` plugin). Use whichever the running SPA routes to — verify by clicking
-  the panel entry, not by hand-typing the SPEC URL.
+  `shared` plugin; SPEC/16 use the same id after ticket 22). Verify by clicking
+  the panel entry.
 
 `bb plugin logs shared` streams `bb.log` output from `server.ts` if anything
 misbehaves. `bb plugin remove shared` tears the install back down.
@@ -416,7 +408,7 @@ and the failure indicator.
 
 | Symptom | Likely cause | Diagnose / fix |
 |---|---|---|
-| **Every guest request 403**, even a plain thread view with a valid `write` token | Plugin-id mismatch — worker calls `/api/v1/plugins/bb-shared/http/authz` but the plugin mounts under `shared`, so authz is unreachable and the gate fails **closed** | Run `bb plugin list` for the real id; curl the authz route at both `.../plugins/shared/http/authz` and `.../plugins/bb-shared/http/authz` with `Bearer $(bb plugin token <id>)` — the 200 one is the real mount. Reconcile the worker's authz URL to it. **Check this first.** |
+| **Every guest request 403**, even a plain thread view with a valid `write` token | Plugin-id mismatch — the worker's authz URL doesn't match the plugin's mount id `shared`, so authz is unreachable and the gate fails **closed**. Ticket 22 aligned both to `shared`; a regression would reintroduce this | Run `bb plugin list` for the real id (expect `shared`); curl the authz route at `.../plugins/shared/http/authz` with `Bearer $(bb plugin token shared)` — a 200 confirms the mount. Confirm the worker's `AUTHZ_ENDPOINT_PATH` uses the same id. |
 | First **mint hangs or errors** | No CF egress, or PoW/provision failure | Confirm reachability to `api.cloudflare.com`; watch `bb plugin logs shared` for the provision/upload error; `getWorkerStatus` pill shows the error state. |
 | Worker was live, now **all guests 503** with `x-bb-tunnel-offline: 1` | `SharedTunnel` not connected to `/__tunnel` (dropped, or secret mismatch) | Check the tunnel status in `getWorkerStatus.tunnel`; a `401/403` on dial means `TUNNEL_SECRET` drift between KV and the deployed worker — the lifecycle rotates the secret on redeploy, so a stale worker won't match. Redeploy. |
 | **Guest chrome still shows** Settings / Extensions / New-thread | Chrome shim didn't inject | Confirm the guest response is `text/html` and `<html>` carries `data-bb-guest="1"`; if a bb upgrade moved a selector, run `node scripts/check-chrome-selectors.mjs <bb>/apps/app/dist` — a MISSING probe means the selector drifted and must be re-pinned (bump `BB_VERSION`). |

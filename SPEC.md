@@ -255,7 +255,7 @@ Registered surfaces (all from bb's frontend plugin contract at
   left of the thread header action row. Click → portalled popover with
   quick actions: "Add to `brave-otter` (read | write)", "Add to
   `silver-fox`", "Mint new share". Also "Open management panel".
-- **`navPanel`** at `/plugins/bb-shared/tokens` — the management console.
+- **`navPanel`** at `/plugins/shared/tokens` — the management console.
   Grouped by token. Per-token: label (renameable), share list (thread +
   perm, per-row remove/upgrade/downgrade), copy-URL, delete-token.
   Header: "Mint new" + live worker status.

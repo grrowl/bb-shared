@@ -9,7 +9,7 @@
  *
  * Per guest request:
  *
- *   1. Call `GET /api/v1/plugins/bb-shared/http/authz?token=…&path=…&method=…`
+ *   1. Call `GET /api/v1/plugins/shared/http/authz?token=…&path=…&method=…`
  *      over the tunnel, bearer-authed with `env.AUTHZ_TOKEN` (issue 07).
  *   2. Parse `{ allowed, thread_scope, project_scope, perms, reason? }`.
  *   3. Populate `ctx.scope` (issue 11's `GuestScope`) from `thread_scope` and
@@ -29,7 +29,7 @@ import type { GuestScope } from "../scope.js";
 import type { TunnelRouter } from "../tunnel/interface.js";
 
 /** Where 06's authz route lives on the local bb, behind the tunnel. */
-const AUTHZ_ENDPOINT_PATH = "/api/v1/plugins/bb-shared/http/authz";
+const AUTHZ_ENDPOINT_PATH = "/api/v1/plugins/shared/http/authz";
 
 /**
  * The `/authz` response shape (issue 06's `AuthzResult`). `project_scope` (issue

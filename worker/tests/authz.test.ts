@@ -169,7 +169,7 @@ describe("authzStage", () => {
     // and bearer, and forwarded the guest's own path/method.
     const req = seen()!;
     const u = new URL(req.url);
-    expect(u.pathname).toBe("/api/v1/plugins/bb-shared/http/authz");
+    expect(u.pathname).toBe("/api/v1/plugins/shared/http/authz");
     expect(u.searchParams.get("token")).toBe(GUEST_TOKEN);
     expect(u.searchParams.get("path")).toBe("/api/v1/threads/T1/detail");
     expect(u.searchParams.get("method")).toBe("GET");

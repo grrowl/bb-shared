@@ -7,7 +7,7 @@
 // enforces). No authz logic is duplicated in the worker — it only does path
 // matching and enforces whatever we return here.
 //
-//   GET /api/v1/plugins/bb-shared/http/authz?token=…&path=…&method=…
+//   GET /api/v1/plugins/shared/http/authz?token=…&path=…&method=…
 //
 // Response body:
 //   { allowed, thread_scope: string[], project_scope: string[],
@@ -215,7 +215,7 @@ export const AUTHZ_ROUTE_PATH = "authz";
 
 /**
  * Register the token-authed authz route. `auth: "token"` gates it behind the
- * per-plugin token (`bb plugin token bb-shared`, provisioned by issue 07) —
+ * per-plugin token (`bb plugin token shared`, provisioned by issue 07) —
  * the worker is the only legitimate caller.
  */
 export function registerAuthzRoute(bb: BbPluginApi, store: Store): void {

@@ -20,7 +20,7 @@
 // The "Manage all shares →" link routes to this plugin's `tokens` nav panel,
 // which will be fleshed out by issue 16. The panel path is registered in
 // `app.tsx`; `useBbNavigate().toPluginPanel("tokens")` resolves to
-// `/plugins/bb-shared/tokens` at runtime.
+// `/plugins/shared/tokens` at runtime.
 import * as React from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Share08Icon } from "@hugeicons/core-free-icons";

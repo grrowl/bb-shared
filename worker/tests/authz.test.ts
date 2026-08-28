@@ -87,12 +87,14 @@ function expectRespond(r: StageResult): Response {
 const allow = (over: Partial<AuthzResponse> = {}): AuthzResponse => ({
   allowed: true,
   thread_scope: ["T1"],
+  project_scope: ["P1"],
   perms: [{ thread_id: "T1", mode: "write" }],
   ...over,
 });
 const deny = (reason: string): AuthzResponse => ({
   allowed: false,
   thread_scope: [],
+  project_scope: [],
   perms: [],
   reason,
 });
@@ -107,20 +109,23 @@ describe("scopeFromAuthz", () => {
     expect([...scope.threadIds].sort()).toEqual(["T1", "T2"]);
   });
 
-  it("derives projectIds from any perm project_id (forward-compatible)", () => {
-    const scope = scopeFromAuthz({
-      allowed: true,
-      thread_scope: ["T1", "T2"],
-      perms: [
-        { thread_id: "T1", mode: "read", project_id: "P1" },
-        { thread_id: "T2", mode: "write", project_id: "P1" },
-      ],
-    });
+  it("maps project_scope → projectIds (issue 19)", () => {
+    const scope = scopeFromAuthz(
+      allow({ thread_scope: ["T1", "T2"], project_scope: ["P1", "P2"] }),
+    );
+    expect([...scope.projectIds].sort()).toEqual(["P1", "P2"]);
+  });
+
+  it("multiple threads in one project → single project id", () => {
+    // 06 dedupes project_scope, so two same-project threads yield one entry.
+    const scope = scopeFromAuthz(
+      allow({ thread_scope: ["T1", "T2"], project_scope: ["P1"] }),
+    );
     expect([...scope.projectIds]).toEqual(["P1"]);
   });
 
-  it("yields empty projectIds when perms carry no project_id (06 today)", () => {
-    const scope = scopeFromAuthz(allow());
+  it("yields empty projectIds when project_scope is empty", () => {
+    const scope = scopeFromAuthz(allow({ project_scope: [] }));
     expect(scope.projectIds.size).toBe(0);
   });
 });
@@ -157,6 +162,8 @@ describe("authzStage", () => {
     const r = await authzStage(router).run(makeCtx());
     const cont = expectContinue(r);
     expect(cont.ctx.scope?.threadIds.has("T1")).toBe(true);
+    // project_scope (issue 19) flows straight into GuestScope.projectIds.
+    expect(cont.ctx.scope?.projectIds.has("P1")).toBe(true);
 
     // Sanity: it consulted the plugin's /authz endpoint with the right query
     // and bearer, and forwarded the guest's own path/method.

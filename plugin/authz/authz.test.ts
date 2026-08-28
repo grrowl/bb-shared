@@ -170,12 +170,56 @@ describe("authorize", () => {
   });
 });
 
+describe("project_scope", () => {
+  it("single share → the share's project id", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/system/config",
+      method: "GET",
+    });
+    expect(res.project_scope).toEqual(["p1"]);
+  });
+
+  it("multiple threads in the same project → deduped to one entry", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+      { thread_id: "t2", perm: "write", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/system/config",
+      method: "GET",
+    });
+    expect(res.project_scope).toEqual(["p1"]);
+    // thread_scope keeps both; only project_scope dedupes.
+    expect(res.thread_scope).toEqual(["t1", "t2"]);
+  });
+
+  it("threads across projects → one entry per distinct project", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read", project_id: "p1" },
+      { thread_id: "t2", perm: "write", project_id: "p2" },
+      { thread_id: "t3", perm: "read", project_id: "p1" },
+    ]);
+    const res = await authorize(store, {
+      token: rawToken,
+      path: "/api/v1/system/config",
+      method: "GET",
+    });
+    expect([...res.project_scope].sort()).toEqual(["p1", "p2"]);
+  });
+});
+
 describe("computeAuthz", () => {
   it("null token → denied as unknown", () => {
     const res = computeAuthz(null, "/api/v1/threads/t1", "GET");
     expect(res).toEqual({
       allowed: false,
       thread_scope: [],
+      project_scope: [],
       perms: [],
       reason: "unknown token",
     });

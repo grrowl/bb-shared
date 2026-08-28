@@ -10,7 +10,8 @@
 //   GET /api/v1/plugins/bb-shared/http/authz?token=…&path=…&method=…
 //
 // Response body:
-//   { allowed, thread_scope: string[], perms: {thread_id, mode}[], reason? }
+//   { allowed, thread_scope: string[], project_scope: string[],
+//     perms: {thread_id, mode}[], reason? }
 //
 // See SPEC.md §"Worker knowledge of scope" and §"Scope enforcement".
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -28,6 +29,13 @@ export interface AuthzPerm {
 export interface AuthzResult {
   allowed: boolean;
   thread_scope: string[];
+  /**
+   * Unique project ids across the token's shares (issue 19). Populates the
+   * worker's `GuestScope.projectIds` (stages 09/11) directly — the worker no
+   * longer derives it from per-thread perms. Deduped: two threads in the same
+   * project yield one entry.
+   */
+  project_scope: string[];
   perms: AuthzPerm[];
   reason?: string;
 }
@@ -112,12 +120,17 @@ export function computeAuthz(
     return {
       allowed: false,
       thread_scope: [],
+      project_scope: [],
       perms: [],
       reason: "unknown token",
     };
   }
 
   const thread_scope = token.shares.map((s) => s.thread_id);
+  // Unique project ids across the token's shares (issue 19). Two threads in the
+  // same project collapse to one entry; the worker's `GuestScope.projectIds`
+  // consumes this directly.
+  const project_scope = [...new Set(token.shares.map((s) => s.project_id))];
   const perms: AuthzPerm[] = token.shares.map((s) => ({
     thread_id: s.thread_id,
     mode: s.perm,
@@ -129,6 +142,7 @@ export function computeAuthz(
     return {
       allowed: false,
       thread_scope,
+      project_scope,
       perms,
       reason: `unrecognized path: ${path || "(empty)"}`,
     };
@@ -136,7 +150,7 @@ export function computeAuthz(
 
   if (classified.kind === "non-thread") {
     // Always allowed; the worker's response filters do the per-scope shaping.
-    return { allowed: true, thread_scope, perms };
+    return { allowed: true, thread_scope, project_scope, perms };
   }
 
   // Thread path: allow iff the thread is in scope; mutating methods need write.
@@ -146,6 +160,7 @@ export function computeAuthz(
     return {
       allowed: false,
       thread_scope,
+      project_scope,
       perms,
       reason: `thread ${threadId} not in token scope`,
     };
@@ -154,11 +169,12 @@ export function computeAuthz(
     return {
       allowed: false,
       thread_scope,
+      project_scope,
       perms,
       reason: `write permission required on thread ${threadId}`,
     };
   }
-  return { allowed: true, thread_scope, perms };
+  return { allowed: true, thread_scope, project_scope, perms };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +201,7 @@ export async function authorize(
     return {
       allowed: false,
       thread_scope: [],
+      project_scope: [],
       perms: [],
       reason: "missing token",
     };

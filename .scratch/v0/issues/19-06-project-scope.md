@@ -1,4 +1,4 @@
-Status:
+Status: resolved
 Type: task
 Blocked by: 06
 
@@ -66,3 +66,44 @@ Small ticket — one session.
 ## Comments
 
 ## Answer
+
+Shipped option **(b)** — a dedicated `project_scope: string[]` field alongside
+`thread_scope`, matching the rec.
+
+**Plugin (`plugin/authz/authz.ts`)**
+
+- Added `project_scope: string[]` to `AuthzResult`.
+- `computeAuthz` derives it as `[...new Set(token.shares.map(s => s.project_id))]`
+  — deduped project ids across the token's shares — and returns it on every
+  branch (null-token, invalid, non-thread, out-of-scope, write-denied, allowed).
+  `authorize`'s missing-token branch returns `project_scope: []` too.
+- No store change: `Share.project_id` was already present.
+
+**Plugin tests (`plugin/authz/authz.test.ts`)**
+
+- New `project_scope` describe block: single share → `["p1"]`;
+  multi-thread-same-project → deduped to one entry (`thread_scope` keeps both);
+  multi-project → one entry per distinct project.
+- Fixed the `computeAuthz` null-token `toEqual` to include `project_scope: []`.
+
+**Worker (`worker/src/stages/authz.ts`)**
+
+- `scopeFromAuthz` now reads `project_scope` directly:
+  `projectIds = new Set(resp.project_scope ?? [])`. Dropped the empty
+  `perm.project_id` fallback and removed the now-unused optional `project_id`
+  from `AuthzPerm`. Added `project_scope: string[]` to `AuthzResponse`.
+
+**Worker tests (`worker/tests/authz.test.ts`)**
+
+- `allow`/`deny` fixtures carry `project_scope`. `scopeFromAuthz` cases now
+  assert `project_scope → projectIds` (multi-project, same-project dedupe from
+  06, empty). The `authzStage` allow case asserts `scope.projectIds.has("P1")`.
+
+**Verify — all green**
+
+- plugin: `tsc --noEmit` clean, `bb plugin build .` clean, vitest 15/15.
+- worker: `tsc --noEmit` clean, vitest 21/21, `wrangler deploy --dry-run` builds.
+
+No overlap with 18 (touched only `plugin/authz/` and `worker/src/stages/authz.ts`
++ their tests). `worker/src/scope.ts`'s doc comment already described
+`projectIds` as the union of shares' projects — still accurate, left as-is.

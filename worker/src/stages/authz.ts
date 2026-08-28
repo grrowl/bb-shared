@@ -11,10 +11,10 @@
  *
  *   1. Call `GET /api/v1/plugins/bb-shared/http/authz?token=…&path=…&method=…`
  *      over the tunnel, bearer-authed with `env.AUTHZ_TOKEN` (issue 07).
- *   2. Parse `{ allowed, thread_scope, perms, reason? }`.
+ *   2. Parse `{ allowed, thread_scope, project_scope, perms, reason? }`.
  *   3. Populate `ctx.scope` (issue 11's `GuestScope`) from `thread_scope` and
- *      `perms`, so the WS frame filter (11) and response filters (09) — which
- *      run AFTER this stage — see a resolved scope.
+ *      `project_scope`, so the WS frame filter (11) and response filters (09) —
+ *      which run AFTER this stage — see a resolved scope.
  *   4. `allowed === false` → deny: `403 { error: "scope", reason }` for API
  *      paths, `404` for SPA/HTML paths. `allowed === true` → continue.
  *
@@ -32,21 +32,21 @@ import type { TunnelRouter } from "../tunnel/interface.js";
 const AUTHZ_ENDPOINT_PATH = "/api/v1/plugins/bb-shared/http/authz";
 
 /**
- * The `/authz` response shape (issue 06's `AuthzResult`). `perms[].project_id`
- * is declared optional and forward-compatible: 06 currently returns only
- * `{ thread_id, mode }`, so `projectIds` derives empty today; if 06 later
- * carries the project id, `scopeFromAuthz` picks it up with no change here (we
- * add no independent derivation of our own — see the Answer note on ticket 10).
+ * The `/authz` response shape (issue 06's `AuthzResult`). `project_scope` (issue
+ * 19) is the deduped set of project ids across the token's shares — 06 derives
+ * it authoritatively, so `projectIds` comes straight from it with no worker-side
+ * derivation. `perms` carries only the per-thread mode; it no longer needs a
+ * `project_id` (that fallback was empty pre-19 and is now unnecessary).
  */
 export interface AuthzPerm {
   thread_id: string;
   mode: "read" | "write";
-  project_id?: string;
 }
 
 export interface AuthzResponse {
   allowed: boolean;
   thread_scope: string[];
+  project_scope: string[];
   perms: AuthzPerm[];
   reason?: string;
 }
@@ -54,10 +54,7 @@ export interface AuthzResponse {
 /** Translate 06's response into the `GuestScope` shape stages 09/11 consume. */
 export function scopeFromAuthz(resp: AuthzResponse): GuestScope {
   const threadIds = new Set(resp.thread_scope ?? []);
-  const projectIds = new Set<string>();
-  for (const perm of resp.perms ?? []) {
-    if (perm.project_id) projectIds.add(perm.project_id);
-  }
+  const projectIds = new Set(resp.project_scope ?? []);
   return { threadIds, projectIds };
 }
 

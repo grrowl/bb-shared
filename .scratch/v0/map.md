@@ -5,8 +5,8 @@ Parent: [SPEC.md](../../SPEC.md)
 ## Notes
 
 - Token/share state is in-memory; worker deployment record persists in
-  bb's `PluginSettings` (narrow exception). Interface designed so a
-  persistent backend can slot in later without call-site changes.
+  `bb.storage.kv` (narrow exception). Interface designed so a persistent
+  backend can slot in later without call-site changes.
 - Per-owner CF worker deployed via CF temp-deployments (PoW-gated).
 - Worker is dumb; pulls token scope from local bb per request via 06's
   authz endpoint.
@@ -18,12 +18,12 @@ Parent: [SPEC.md](../../SPEC.md)
 - **Transport**: fork of bb's connect worker + vendored tunnel-client
   packages wrapped in a `SharedTunnel` class. No Tailscale.
   (issues: 01 ✓, 02 ✓, 08 ✓, 14 ✓)
-- **Deployment**: always-temp CF deploy (no wrangler, no branching,
-  one code path). Worker state persisted in bb's `PluginSettings`.
-  Lazy first-deploy; reuse on plugin start if health-check passes;
-  bootstrap fresh on failure/expiry. **60-min unclaimed TTL** — v0 UI
-  nudges owner to claim (no tracking of claim state).
-  (issue: 07 — absorbs deploy pipeline + secret provisioning + claim
+- **Deployment**: always-temp CF deploy (no wrangler at runtime, one
+  code path). Worker state persisted in `bb.storage.kv`. Lazy first
+  deploy on `mintToken`; reuse on plugin start if health-check passes;
+  bootstrap fresh on failure/expiry. 60-min unclaimed TTL — owner UI
+  nudges to claim.
+  (issue: 07 ✓ — absorbs deploy pipeline + secret provisioning + claim
   nudge; former issue 13 merged in)
 - **Guest URL**: `https://{host}/{token}/projects/{p}/threads/{t}`
   primary; `?token=…` → cookie → 302 fallback. (issue: 08 ✓)
@@ -33,67 +33,74 @@ Parent: [SPEC.md](../../SPEC.md)
   No expiry, no session tracking. (issues: 05 ✓, 16 ✓)
 - **Owner UI**: `experimental_threadHeaderAction` + `navPanel` +
   `commandPaletteAction`. React + `useRpc` + `useRealtime`. Share
-  popover, palette entry, and token management console all live.
+  popover, palette entry, token management console all live.
   (issues: 04 ✓, 15 ✓, 16 ✓)
 - **Guest scope**: full SPA served, filtered at proxy. Two endpoints
   (`/system/config`, `/sidebar-bootstrap`) shape 90%. Plugin frontends
-  suppressed for v0 (empty `/plugins` inventory). (issue: 09)
+  suppressed for v0 (empty `/plugins` inventory).
+  (issue: 09 ✓ — response filters live)
 - **Authz**: single source of truth = plugin's /authz endpoint (06 ✓).
-  Worker's mutation gate (10) delegates; no duplicated logic.
+  Worker's mutation gate (10 ✓) delegates; no duplicated logic.
 - **WS events**: full catalog + filter predicates implemented. Three
   ephemeral broadcasts drop-by-default is load-bearing.
   (issues: 03 ✓ — see `research/realtime-events.md` — and 11 ✓)
-- **Secrets**: two — authz-endpoint bearer (via `bb plugin token`) and
-  tunnel handshake secret (design TBD, adversarial review required).
-  Both owned by 07.
+- **Chrome shim**: HTML rewrite injects CSS + JS to hide Settings,
+  Extensions, New-thread, plugin-nav-sidebar-items on guest requests.
+  Selectors CI-pinned via `scripts/check-chrome-selectors.mjs` +
+  `BB_VERSION`. (issue: 12 ✓)
+- **Secrets**: two — authz bearer via `bb.sdk.plugins.token()` and
+  tunnel handshake secret (32B CSPRNG, rotated per redeploy, persisted
+  plaintext in bb.storage.kv). Both owned by 07 ✓. Adversarial review
+  still wanted (see follow-ups).
 - **Origin guard**: solved by vendored `headersForLoopbackRequest`;
-  worker unconditionally sets Origin to its public origin (enforced in
-  08 ✓, exercised in 14 ✓ via `resolveOrigin`).
-- **Non-goals for v0**: persistence, presence UI, transcript
-  attribution, guest identity, multi-tenancy, guest-side plugins,
-  Tailscale.
+  worker unconditionally sets Origin to its public origin
+  (08 ✓ enforced; 14 ✓ exercises via `resolveOrigin`).
+- **Non-goals for v0**: persistence (except worker record), presence
+  UI, transcript attribution, guest identity, multi-tenancy,
+  guest-side plugins, Tailscale.
 
 ## Fog
 
-- Tunnel handshake secret design — reuse bb's or mint our own; needs
-  adversarial review pass (owned by 07).
-- SPA data-testid stability across bb versions — CI pin needed (owned
-  by 12).
+- SPA data-testid stability across bb versions — CI pinned per
+  `BB_VERSION`; needs re-run on each bump.
 
 ## Frontier
 
-Rounds 1, 2, 3 done. Round 4 in flight (07, 09 ✓, 10 ✓, 12 ✓).
-Resolved so far: 01, 02, 03, 04, 05, 06, 08, 09, 10, 11, 12, 14, 15, 16.
+Rounds 1, 2, 3, 4 all done. Resolved: 01–06, 08–12, 14–16.
 
-Queued after round 4 completes:
+Currently unblocked: **17, 18, 19.**
 
-- **18** realtime-channels split — cleanup
-- **19** 06 authz: add project_scope — surfaced during 10's work; 09/11
-  need `projectIds` populated and today's authz response has no
-  project field. Small ticket, blocks 09 and 11 from being correct
-  end-to-end (though both compile today).
-- **17** e2e smoke — end-to-end runbook after everything is wired
+Recommended round 5 (2 parallel, both small):
 
-## Known drift / follow-ups from in-flight work
+- **18** realtime-channels split — cleanup so frontend can import
+  channel names without dragging node:crypto into the browser bundle.
+- **19** 06 authz: add project_scope — enables 09/11 to populate
+  `GuestScope.projectIds` correctly.
+
+Round 6 (after 18/19 land):
+
+- **17** e2e smoke — manual runbook walking the whole flow.
+
+Separately, whenever you want:
+
+- Adversarial review pass on the tunnel-secret design (codex/sol
+  subthread). Two residuals to probe: KV plaintext under local-trust
+  assumption, and no TLS-identity pinning beyond the assigned
+  `*.workers.dev` origin. Owner 07's `tunnel-secret.ts` has the full
+  threat-model comment as the review's starting point.
+
+## Follow-ups / drift captured during rounds 2-4
 
 - 06's `/authz` response has no project scope field, so worker's
-  `GuestScope.projectIds` is empty today. Consumed by 09 (project
-  filtering in sidebar-bootstrap) and 11 (project-detail
-  subscriptions). Fix owned by ticket **19**.
-
-## Round 3 commit hygiene note
-
-Round 3's four bb subthreads ran in one shared working tree. My
-prompt template said `git add -A`, and ticket 11 committed
-(`8c37eb1`) while 14 and 16 had in-progress files on disk —
-sweeping them into 11's commit. All work landed correctly; just
-muddy attribution.
-
-- `8c37eb1` "11: WS frame filter" actually contains 11's + 14's +
-  16's code artifacts.
-- `8daae2d` "14: …" is a status-only commit (Answer + ticket state).
-- `3ee0952` "16: …" is a status-only commit (Answer + ticket state).
-- `989c2dd` "06: authz endpoint" was staged with explicit paths,
-  clean.
-
-Round 4 prompts fixed: stage own files by path, not `git add -A`.
+  `GuestScope.projectIds` is empty today. Fix owned by **19**.
+- 09 kept `defaultKeybindings` / `keybindingOverrides` (ticket only
+  named `keybindings` for stripping) and left in-scope projects'
+  `sources` fields present (guest is authed for that project). Both
+  documented in 09's answer for a future review.
+- 16 disables the Copy-URL button after mint (raw bearer isn't
+  returned by `listTokens` — correct posture). Thread rows show
+  `thread_id` because RPC contract exposes no thread title. Both are
+  potential v0.1 polish tickets.
+- 12 corrected two selectors from the naive SPEC: `plugin-nav-sidebar-items`
+  is a data-testid (not class), `Settings` / `New thread` aria-labels
+  are dynamic (need `^=` prefix match). SPEC updated in fa0eb8e.

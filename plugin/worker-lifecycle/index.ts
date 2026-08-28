@@ -11,8 +11,10 @@ export {
   createWorkerRecordStore,
   workerRecordSchema,
   WORKER_RECORD_KEY,
+  WORKER_RECORD_SECRET_FIELDS,
   type WorkerRecord,
   type WorkerRecordStore,
+  type WorkerRecordStoreOptions,
   type RecordKv,
 } from "./worker-record";
 export { bundleWorker, type BundleOptions } from "./worker-bundle";

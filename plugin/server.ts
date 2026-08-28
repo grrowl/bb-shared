@@ -24,6 +24,7 @@ import {
   bundleWorker,
   createWorkerRecordStore,
 } from "./worker-lifecycle";
+import { createDeviceKeyProvider } from "./lib/device-key";
 import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
@@ -189,8 +190,22 @@ export default async function plugin(bb: BbPluginApi) {
     process.env.BB_SHARED_WORKER_DIR ??
     fileURLToPath(new URL("../worker", import.meta.url));
 
+  // Device-tied key for at-rest encryption of the worker record's secret
+  // fields (issue 29). macOS Keychain on this owner's Mac; a 0600 file fallback
+  // elsewhere. The key never touches the repo or bb.storage.kv. `dataDir` is a
+  // thunk so the bind-gated `experimental_dataDir` is only read on the
+  // non-macOS fallback path, not at plugin load.
+  const deviceKeyProvider = createDeviceKeyProvider({
+    dataDir: () => bb.server.experimental_dataDir,
+    pluginId: bb.pluginId,
+    log: bb.log,
+  });
+
   const lifecycle = new WorkerLifecycle({
-    recordStore: createWorkerRecordStore(bb.storage.kv),
+    recordStore: createWorkerRecordStore(bb.storage.kv, {
+      keyProvider: deviceKeyProvider,
+      log: bb.log,
+    }),
     log: bb.log,
     publishStatus: (status) => {
       bb.realtime.publish(REALTIME_CHANNELS.workerChanged, status);

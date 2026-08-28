@@ -68,41 +68,60 @@ Parent: [SPEC.md](../../SPEC.md)
   21 / SPEC §"Trust model"). Also v1 candidates: TLS-fingerprint pinning
   (L3), best-effort delete of the prior-gen CF account on redeploy (L4).
 
-## Frontier
+## Status — v0 COMPLETE
 
-Rounds 1–6 done. Resolved: 01–06, 08–12, 14–17, 18, 19.
+All 21 delivery tickets resolved. Adversarial security review conducted;
+CONDITIONAL SHIP conditions all met.
 
-**v0 ship-blockers cleared:**
+Resolved: 01–12, 14–22.
 
-- **22** ✓ — plugin id mismatch fixed (`shared` everywhere in URL paths).
-- **20** ✓ — HIGH+MEDIUM security findings from tunnel-secret
-  adversarial review all resolved: `claim` off guest-reachable payloads
-  (defense in depth), plugin RPC deny-closed at worker, CF SDK errors
-  scrubbed, deploy race dedupe fixed.
+- E2E runbook at `docs/e2e-runbook.md`.
+- Adversarial review at `research/tunnel-secret-review.md`.
+- Trust model documented in SPEC §"Trust model".
+- Git history is per-ticket commits (one mixed commit `8c37eb1` from
+  round-3 `git add -A` race, noted at the time and left as-is).
 
-Then:
+## v0.1 backlog
 
-- **21** — LOW security findings + accepted residuals (polish): doc
-  contradictions, health-check sharpening, TLS pinning residual, KV
-  plaintext trust-model documentation.
+Captured from ticket answers during v0 delivery:
 
-Adversarial review report: `research/tunnel-secret-review.md`. Verdict
-CONDITIONAL SHIP — conditions are 20+21.
+- **UX polish** — thread rows show `thread_id` instead of thread title
+  (RPC contract exposes no title; noted by 16). Copy-URL only works
+  for session-minted tokens (raw bearer isn't returned by `listTokens`;
+  correct posture per SPEC, but a UX gap; also noted by 16).
+- **Live guest sidebar** — guest's WS scope is fixed at upgrade;
+  `useRealtime` is owner-side only. Guests need a reload when shares
+  change. Fix: teach worker's WS filter to accept scope updates via
+  a control frame, or expose a lightweight guest-side "refresh" hint.
+  (Noted by 17.)
+- **Push revocation** — currently pull-based; enforcement is at the
+  next request/reload. Guests with an already-rendered tab stay
+  functional until refresh. Fix: worker proactively closes sockets on
+  token/share revocation. (Noted by 17.)
+- **Lazy deploy on `openShareDialog`** — SPEC allows this alongside
+  `mintToken`; only mint triggers today. First-share UX cost.
+  (Noted by 17.)
+- **Response-filter cleanup** — 09 kept `defaultKeybindings` /
+  `keybindingOverrides` in `/system/config` (ticket named only
+  `keybindings` for stripping) and left in-scope projects' `sources`
+  fields present. Worth a review pass. (Noted by 09.)
 
-E2E runbook: `docs/e2e-runbook.md` (17 ✓). Also flagged three known
-v0 limitations not blocking ship: guest sidebar doesn't live-update
-(WS scope fixed at upgrade, useRealtime is owner-side), revocation is
-pull-based (no proactive socket teardown), lazy deploy fires on
-`mintToken` only (not `openShareDialog`). All documented in the
-runbook.
+## v1 candidates (from security review)
 
-Separately, whenever you want:
-
-- Adversarial review pass on the tunnel-secret design (codex/sol
-  subthread). Two residuals to probe: KV plaintext under local-trust
-  assumption, and no TLS-identity pinning beyond the assigned
-  `*.workers.dev` origin. Owner 07's `tunnel-secret.ts` has the full
-  threat-model comment as the review's starting point.
+- **KV encryption** with a device-tied key (macOS Keychain / equivalent).
+  `apiToken` is the crown-jewel at-rest item — attacker with it can
+  redeploy a malicious worker under our name, making tunnel-secret
+  rotation moot.
+- **TLS-fingerprint pinning** on the tunnel client's outbound to
+  `*.workers.dev` — captures the initial cert fingerprint, rejects
+  drift. Closes the CF-account-control MITM path (L3 residual).
+- **Best-effort delete of prior-gen CF account on redeploy** — L4
+  residual. Currently the prior worker returns 5xx until CF reclaims
+  the unclaimed account (≤60 min).
+- **OAuth-based claim flow** — captures the claimed CF account and
+  keeps managing under it, replacing the fire-and-forget claim.url
+  nudge with a real state machine (spike 01 called this out; SPEC
+  positions it as v2).
 
 ## Follow-ups / drift captured during rounds 2-4
 

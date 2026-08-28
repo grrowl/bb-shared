@@ -249,6 +249,192 @@ function WorkerClaimNudge() {
 }
 
 // ---------------------------------------------------------------------------
+// Cloudflare connection (issue 28). The owner connects their real Cloudflare
+// account by OAuth so a claimed worker is reused across restarts and managed
+// from the API. This surfaces alongside the claim nudge: connect, the connected
+// state (account + live hostname), and disconnect. Copy stays short and factual.
+//
+// The connect RPC returns an authorize URL the browser opens; the exchange +
+// discovery finish in the background and push on the connection-changed channel,
+// so we refetch on that signal. A "not implemented" / unavailable rejection
+// collapses to a hidden panel rather than an error.
+// ---------------------------------------------------------------------------
+
+interface ConnectionView {
+  connection: "not-connected" | "connecting" | "connected";
+  claimed: boolean;
+  accountId?: string;
+  hostname?: string;
+  writeGranted?: boolean;
+}
+
+type ConnState =
+  | { kind: "loading" }
+  | { kind: "unavailable" } // stub / not-implemented / no OAuth in build
+  | { kind: "ready"; status: ConnectionView };
+
+function useConnection(): { state: ConnState; refetch: () => void } {
+  const rpc = useRpc<typeof rpcContract>();
+  const [state, setState] = React.useState<ConnState>({ kind: "loading" });
+  const requestRef = React.useRef(0);
+
+  const refetch = React.useCallback(() => {
+    const requestId = ++requestRef.current;
+    rpc
+      .call("getConnectionStatus", null)
+      .then((status) => {
+        if (requestRef.current !== requestId) return;
+        setState({ kind: "ready", status: status as ConnectionView });
+      })
+      .catch((err: unknown) => {
+        if (requestRef.current !== requestId) return;
+        const message = errorText(err);
+        setState(
+          NOT_IMPLEMENTED_RE.test(message)
+            ? { kind: "unavailable" }
+            : { kind: "unavailable" },
+        );
+      });
+  }, [rpc]);
+
+  React.useEffect(() => refetch(), [refetch]);
+  useRealtime(REALTIME_CHANNELS.connectionChanged, () => refetch());
+  return { state, refetch };
+}
+
+/**
+ * The Cloudflare connect panel. Shown once a worker exists (it pairs with the
+ * claim nudge): before a worker there is nothing to connect for. Connecting
+ * opens the CF authorize page in the owner's browser; when it comes back, the
+ * background flow confirms the claim and this refetches live.
+ */
+function CloudflareConnect({ workerExists }: { workerExists: boolean }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const { state } = useConnection();
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const connect = React.useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { authorizeUrl } = await rpc.call("connectCloudflare", null);
+      navigate.openUrl(authorizeUrl);
+    } catch (err: unknown) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [rpc, navigate]);
+
+  const disconnect = React.useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.call("disconnectCloudflare", null);
+    } catch (err: unknown) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [rpc]);
+
+  if (state.kind !== "ready") return null;
+  const status = state.status;
+
+  // Connected + claimed: the durable state. Show the account + live hostname.
+  if (status.connection === "connected" && status.claimed) {
+    return (
+      <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-background/30 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
+            <span className="size-2 rounded-full bg-emerald-500" aria-hidden />
+            Cloudflare connected
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => void disconnect()}
+            className="h-7 px-2 text-xs"
+          >
+            {busy ? "Disconnecting…" : "Disconnect"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          This worker is permanent and reused across restarts.
+          {status.hostname ? (
+            <>
+              {" "}
+              It is served at{" "}
+              <span className="font-mono text-foreground">{status.hostname}</span>.
+            </>
+          ) : null}
+        </p>
+        {error !== null ? (
+          <p className="text-xs text-destructive">{error}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  // Connected but no claimed worker yet (owner connected before claiming).
+  if (status.connection === "connected") {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Cloudflare connected. Claim the worker to make it permanent.{" "}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void disconnect()}
+          className="font-medium text-foreground underline underline-offset-2 hover:text-foreground/80"
+        >
+          Disconnect
+        </button>
+      </p>
+    );
+  }
+
+  if (status.connection === "connecting") {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Waiting for Cloudflare in your browser…{" "}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void connect()}
+          className="font-medium text-foreground underline underline-offset-2 hover:text-foreground/80"
+        >
+          Reopen
+        </button>
+      </p>
+    );
+  }
+
+  // not-connected: only offer Connect once a worker exists to connect for.
+  if (!workerExists) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-xs text-muted-foreground">
+        Connect your Cloudflare account to keep this worker after you claim it.{" "}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void connect()}
+          className="font-medium text-foreground underline underline-offset-2 hover:text-foreground/80"
+        >
+          {busy ? "Connecting…" : "Connect Cloudflare"}
+        </button>
+      </p>
+      {error !== null ? (
+        <p className="text-xs text-destructive">{error}</p>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Token list data hook. Last-write-wins refetch guard mirrors the popover: the
 // rpc client has no cancellation, so a stale response is dropped by request id.
 // ---------------------------------------------------------------------------
@@ -719,6 +905,11 @@ export function TokensPanel(_props: PluginNavPanelProps) {
             </div>
           </div>
           <WorkerClaimNudge />
+          <CloudflareConnect
+            workerExists={
+              worker.state.kind === "ready" && Boolean(worker.state.status.url)
+            }
+          />
           {flash !== null ? (
             <p className="text-xs text-muted-foreground" role="status">
               {flash}

@@ -68,15 +68,20 @@ Parent: [SPEC.md](../../SPEC.md)
   21 / SPEC §"Trust model"). Also v1 candidates: TLS-fingerprint pinning
   (L3), best-effort delete of the prior-gen CF account on redeploy (L4).
 
-## Status — v0 owner-side complete; guest transport NOT complete
+## Status — guest transport now COMPLETE (27 landed)
 
-All 21 delivery tickets were resolved and an adversarial review passed, BUT a
+All 21 delivery tickets were resolved and an adversarial review passed. A
 post-v0 review (2026-08-28, on installing to test) found the earlier
-"v0 COMPLETE" claim overstated: the CF-side tunnel proxy is an unimplemented
-503 stub, so guest access does not work end-to-end. Owner-side (plugin RPC,
-`/authz` endpoint, owner UI, worker deploy) is functional and installs cleanly.
+"v0 COMPLETE" claim overstated: the CF-side tunnel proxy was an unimplemented
+503 stub, so guest access did not work end-to-end. **Ticket 27 (2026-08-28)
+closes that gap**: `TunnelDO.proxyGuestRequest` now relays guest HTTP + WS over
+the tunnel (faithful port of bb's `apps/connect/src/tunnel-do.ts`), verified
+LIVE end to end against a real anonymous CF temp deploy (guest HTTP request and
+WS passthrough both round-trip through a stub bb behind the local
+`SharedTunnel`). Owner-side (plugin RPC, `/authz`, owner UI, worker deploy) was
+already functional. Guest transport is the last missing link and is now in.
 
-Resolved: 01–12, 14–22. Reopened as post-v0 findings: 23–27 (below).
+Resolved: 01–12, 14–27, 30. Guest half of the e2e runbook is now runnable.
 
 - E2E runbook at `docs/e2e-runbook.md` (guest half currently unrunnable — 27).
 - Adversarial review at `research/tunnel-secret-review.md`.
@@ -108,9 +113,18 @@ now `/authz`. Not yet committed.
 - **26 — token length floor (LOW). DEFERRED.** One-line regex fix, but it
   churns 32/40-char worker test fixtures; not worth it for a non-exploitable
   LOW right now.
-- **27 — CF-side tunnel proxy (HIGH / ship-blocker).** `proxyGuestRequest` is a
-  503 stub; guest transport unimplemented. Research pending on
-  CF-native vs hand-rolled before implementation.
+- **27 — CF-side tunnel proxy (HIGH / ship-blocker). RESOLVED (2026-08-28).**
+  `proxyGuestRequest` was a 503 stub; guest transport is now a faithful port of
+  bb's `apps/connect/src/tunnel-do.ts` in `worker/src/tunnel/tunnel-do.ts`:
+  streamId demux, `open-http`/`open-ws` framing, request-body chunking,
+  `resp-head`+body reassembly into a streamed Response, WS passthrough both
+  ways, backpressure/cleanup on socket close, hibernatable-WebSocket compat.
+  Trimmed of D1/presence and `target` port-sharing (one worker per bb
+  instance). 20 new unit tests (mocked sockets, real contract bytes); full
+  worker suite 187 green, plugin 82 green, tsc clean. Verified LIVE against a
+  real anonymous CF temp deploy: guest HTTP request and WS both round-trip
+  through a stub bb behind the local `SharedTunnel` (evidence in the ticket
+  Answer). Decision was "keep hand-rolled, port bb's DO" — see ticket.
 - **30 — live deploy pipeline fixes (CRITICAL). RESOLVED.** The CF
   live-verification spike (`research/cf-live-verification.md`) found `deployWorker`
   broken in four live-API places: PoW off-by-one hash (`checkpoints[0]` must be

@@ -15,15 +15,18 @@ delivered by issue 14 and the bb-shared plugin.
 - Origin forwarding that satisfies the constraint from spike 02.
 - Stage-based request pipeline so 09/10/11/12 slot in as separate files.
 
-**Deferred to later tickets** (deliberately):
+**Now implemented** (were deferred at scaffold time):
 
 - Response filters (09), mutation gate + route lockouts (10), WS filter (11),
-  SPA chrome shim (12) — each plugs in as a new stage under `src/stages/`.
-- The CF-side tunnel wire protocol (encoding `open-http`, decoding
-  `resp-head`, etc.) lives in `src/tunnel/tunnel-do.ts` and is stubbed to
-  answer 503 until the local half (issue 14) lands. Both sides speak
-  `@bb/tunnel-contract` — porting the wire protocol here is mechanical once
-  14 is ready.
+  SPA chrome shim (12) — each is its own stage under `src/stages/`.
+- The CF-side tunnel wire protocol (encoding `open-http` / `open-ws`, decoding
+  `resp-head` + body, WS passthrough) lives in `src/tunnel/tunnel-do.ts`
+  (issue 27). It is a faithful port of bb's `apps/connect/src/tunnel-do.ts`,
+  trimmed of D1/presence and port-sharing (bb-shared is one worker per bb
+  instance). Both sides speak `@bb-shared/tunnel-contract`; the DO still
+  answers 503 with `x-bb-tunnel-offline: 1` when no tunnel is connected.
+  Verified live end to end (guest HTTP + WS round-trip over a real anonymous
+  temp deploy) — see `.scratch/v0/issues/27-cf-tunnel-proxy-implementation.md`.
 
 ## Layout
 

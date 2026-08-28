@@ -1,4 +1,4 @@
-Status:
+Status: resolved
 Type: task
 Blocked by: 07
 
@@ -84,3 +84,76 @@ secret-bearing worker + leak a `SharedTunnel` instance.
 ## Comments
 
 ## Answer
+
+All four findings fixed. Ticket 22 (plugin id `bb-shared` → `shared`) landed
+first (commit eed3290), so every new URL reference here uses `/plugins/shared/`.
+
+### H1 — `claim.url` off the broadcast + RPC (defense in depth)
+
+The CF `claim.url` is an account-**takeover** bearer, so it no longer rides any
+guest-observable channel:
+
+- `WorkerStatus` (the `getWorkerStatus` RPC payload **and** the `worker-changed`
+  broadcast projection) dropped its `claim` field entirely
+  (`worker-lifecycle.ts`). `getStatus()` no longer copies `record.claim`, so the
+  bearer is gone from both surfaces at the source — not filtered downstream.
+- New owner-only accessor `WorkerLifecycle.getClaimUrl()` and a dedicated
+  `getClaimUrl` RPC (`server.ts`) deliver the claim URL to the owner UI on
+  demand. That RPC path is guest-denied by M2.
+- Frontend (`nav-panel/tokens-panel.tsx`): new `useClaimUrl()` hook pulls the
+  claim via `getClaimUrl` (refetched on the same `worker-changed` signal);
+  `WorkerClaimNudge` reads it instead of `status.claim`.
+- Test: `worker-lifecycle.test.ts` asserts `getStatus()` and **every** captured
+  `publishStatus` broadcast payload contain no `claim` (and no `https://claim/`
+  value), while `getClaimUrl()` still returns it.
+
+### M2 — `getWorkerStatus` (all plugin RPC) guest-unreachable
+
+The plugin's own `/authz` classifier treats any `/plugins/*` subpath as an
+always-allowed non-thread endpoint, so an RPC POST would have been forwarded and
+answered. Added an explicit worker-side deny:
+
+- `worker/src/stages/authz.ts`: `isGuestDeniedRpcPath()` matches
+  `/api/v1/plugins/shared/rpc/*`; the authz stage deny-closes it (403
+  `{ error: "scope", reason: "plugin rpc is not guest-reachable" }`) **before**
+  consulting `/authz` — never dispatched over the tunnel. The `.../http/authz`
+  route the worker itself calls is unaffected.
+- Tests (`worker/tests/authz.test.ts`): guest → 403 on
+  `/api/v1/plugins/shared/rpc/getWorkerStatus` and `.../getClaimUrl` (both never
+  dispatched), plus a `isGuestDeniedRpcPath` unit test guarding the `http/authz`
+  route and prefix false-positives (`.../rpcish/x`).
+
+### M3 — CF SDK error paths scrubbed
+
+- `cf-deploy.ts`: new `redactSecrets()` redacts `bbsh_*`, `bbcm_*`, and any 32+
+  char base64url run (catches the 43-char `tunnelSecret`, the `authzToken`, and
+  the CF api token). The `scripts.update` call is wrapped in try/catch that
+  re-throws a `CfDeployError` with a redacted message, so the raw SDK error
+  never propagates. Both the `deployWorker` retry-log site and
+  `worker-lifecycle.ts`'s deploy-catch `log.error` also pass through
+  `redactSecrets`.
+- Tests (`cf-deploy.test.ts`): `redactSecrets` unit tests, plus an end-to-end
+  `deployWorker` test whose synthetic SDK error echoes the raw
+  `TUNNEL_SECRET`/`AUTHZ_TOKEN` — asserts neither the logged warning nor the
+  thrown error contains the secret (both show `[redacted]`).
+
+### M4 — deploy race routed through the dedupe
+
+- `worker-lifecycle.ts`: extracted `runDeploy()` (the `deployInFlight` dedupe).
+  Both `ensureDeployed()` (mintToken) and `tick()`'s health-fail branch now call
+  `runDeploy()` instead of `deploy()` directly, so at most one deploy is ever in
+  flight — a concurrent mint + health-fail can no longer provision two temp
+  accounts and orphan a live secret-bearing worker.
+- Test (`worker-lifecycle.test.ts`): a health-fail `tick()` with a gated deploy,
+  raced against a concurrent `ensureDeployed()`, results in exactly ONE redeploy
+  (`deployCalls === 2`, not 3).
+
+### Verification
+
+- plugin: `tsc --noEmit` clean; `vitest` 68 pass (+6); `bb plugin build .` exit 0.
+- worker: `tsc --noEmit` clean; `vitest` 162 pass (+4); `wrangler deploy
+  --dry-run` builds.
+
+Note: `getWorkerStatus` retains no takeover bearer post-H1; M2 blocks the whole
+RPC transport regardless. The KV-plaintext / no-TLS-pinning residuals (M5, L1–L4)
+are out of scope here — they belong to ticket 21.

@@ -89,6 +89,39 @@ class CfDeployError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Secret redaction (M3, ticket 20).
+//
+// The tunnel secret and authz token are planted as `secret_text` bindings in
+// the `scripts.update` request body. If the `cloudflare` SDK (or a lower-level
+// fetch) throws an error whose message echoes that body, the raw secret would
+// flow into `bb.log` via the deploy error path — breaking tunnel-secret.ts's
+// "never written to bb.log" claim. Every deploy error string is passed through
+// `redactSecrets` before it is logged (and thrown errors from the upload step
+// are scrubbed at the source), so a secret can never reach a log sink.
+// ---------------------------------------------------------------------------
+
+const SECRET_PATTERNS: readonly RegExp[] = [
+  // bb-shared token handles / raw bearers and bb connect credentials.
+  /bbsh_[A-Za-z0-9_-]+/g,
+  /bbcm_[A-Za-z0-9_-]+/g,
+  // 32+ char base64url runs — catches the 43-char tunnelSecret and any
+  // long opaque token the SDK might echo (authz token, CF api token).
+  /[A-Za-z0-9_-]{32,}/g,
+];
+
+/** Scrub any embedded secret-shaped value from a string bound for a log/throw. */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
+  return out;
+}
+
+/** Redact the `.message` of an unknown thrown value. */
+function redactErrorMessage(err: unknown): string {
+  return redactSecrets(err instanceof Error ? err.message : String(err));
+}
+
 async function cfPost<T>(
   fetchImpl: typeof fetch,
   path: string,
@@ -176,36 +209,50 @@ async function uploadScript(
     type: "application/javascript+module",
   });
 
-  const updated = await client.workers.scripts.update(input.scriptName, {
-    account_id: accountId,
-    metadata: {
-      main_module: "worker.js",
-      compatibility_date: input.compatibilityDate,
-      bindings: [
-        {
-          type: "durable_object_namespace",
-          name: input.doBindingName,
-          class_name: input.doClassName,
+  // The request body carries the raw `secret_text` values. Wrap the SDK call so
+  // any error it throws (which some HTTP SDKs render by echoing the request
+  // body/params) is scrubbed of secrets before it can propagate to a log sink
+  // (M3, ticket 20). The re-thrown error carries only a redacted message.
+  let updated: Awaited<ReturnType<typeof client.workers.scripts.update>>;
+  try {
+    updated = await client.workers.scripts.update(input.scriptName, {
+      account_id: accountId,
+      metadata: {
+        main_module: "worker.js",
+        compatibility_date: input.compatibilityDate,
+        bindings: [
+          {
+            type: "durable_object_namespace",
+            name: input.doBindingName,
+            class_name: input.doClassName,
+          },
+          {
+            type: "secret_text",
+            name: WORKER_ENV.tunnelSecret,
+            text: input.tunnelSecret,
+          },
+          {
+            type: "secret_text",
+            name: WORKER_ENV.authzToken,
+            text: input.authzToken,
+          },
+        ],
+        // Always a first-time migration: every deploy is a fresh temp account.
+        migrations: {
+          new_tag: input.migrationTag,
+          new_classes: [input.doClassName],
         },
-        {
-          type: "secret_text",
-          name: WORKER_ENV.tunnelSecret,
-          text: input.tunnelSecret,
-        },
-        {
-          type: "secret_text",
-          name: WORKER_ENV.authzToken,
-          text: input.authzToken,
-        },
-      ],
-      // Always a first-time migration: every deploy is a fresh temp account.
-      migrations: {
-        new_tag: input.migrationTag,
-        new_classes: [input.doClassName],
       },
-    },
-    files: [workerModule],
-  });
+      files: [workerModule],
+    });
+  } catch (err) {
+    // Non-network SDK errors (4xx validation, etc.) are not retriable; either
+    // way the message is redacted so no secret survives into the caller's log.
+    throw new CfDeployError(
+      `CF scripts.update failed: ${redactErrorMessage(err)}`,
+      false,
+    );
+  }
 
   const { subdomain } = await client.workers.subdomains.get({
     account_id: accountId,
@@ -273,7 +320,10 @@ export async function deployWorker(
     } catch (err) {
       lastError = err;
       const retriable = !(err instanceof CfDeployError) || err.retriable;
-      const message = err instanceof Error ? err.message : String(err);
+      // Redact before logging: a lower-level error may still embed a secret
+      // (M3, ticket 20). The final throw below preserves the original error for
+      // the caller's own (already-redacted) log path.
+      const message = redactErrorMessage(err);
       if (!retriable || attempt === maxAttempts) {
         opts.log?.warn(
           `worker deploy failed (attempt ${attempt}/${maxAttempts}): ${message}`,

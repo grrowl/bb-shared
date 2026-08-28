@@ -96,6 +96,27 @@ export function denyForPath(pathname: string, reason?: string): Response {
   return isApiPath(pathname) ? scopeDenied(reason) : htmlNotFound();
 }
 
+/**
+ * Plugin RPC transport paths a guest must never reach (M2, ticket 20).
+ *
+ * bb serves plugin RPC under `/api/v1/plugins/<id>/rpc/*`. The owner-only
+ * `getClaimUrl` (and the legacy `getWorkerStatus`) RPCs live there, and the CF
+ * `claim.url` they can surface is an account-TAKEOVER bearer. The plugin's own
+ * `/authz` classifier treats every `/plugins/*` subpath as an always-allowed
+ * "non-thread" endpoint (its response filters shape the `GET /plugins`
+ * inventory to `[]`, but an RPC POST is a different route that filter never
+ * touches), so absent an explicit worker-side deny a guest RPC call would be
+ * forwarded over the tunnel and answered. We deny-close it here — before
+ * `/authz` is even consulted — independent of the plugin decision and of the
+ * WS/realtime frame filters. Uses the `shared` plugin id (ticket 22).
+ */
+const GUEST_DENIED_RPC_RE = /^\/api\/v1\/plugins\/shared\/rpc(?:\/|$)/;
+
+/** True for a plugin-RPC path the guest proxy must reject outright (M2). */
+export function isGuestDeniedRpcPath(pathname: string): boolean {
+  return GUEST_DENIED_RPC_RE.test(pathname);
+}
+
 /** Build the bearer-authed authz query for this guest request. */
 function buildAuthzRequest(ctx: RequestContext, token: string): Request {
   const url = new URL(AUTHZ_ENDPOINT_PATH, ctx.workerPublicOrigin);
@@ -126,6 +147,17 @@ export function authzStage(router: TunnelRouter): Stage {
             error: "token_missing",
             detail: "no bb-shared token on request reaching the authz gate",
           }),
+        );
+      }
+
+      // M2 (ticket 20): plugin RPC is owner-only. Deny-close it locally before
+      // consulting /authz so a guest can never reach getClaimUrl /
+      // getWorkerStatus (the CF claim.url account-takeover bearer). The plugin's
+      // /authz would classify this as an allowed non-thread path, so this guard
+      // is the enforcement point.
+      if (isGuestDeniedRpcPath(ctx.url.pathname)) {
+        return respond(
+          denyForPath(ctx.url.pathname, "plugin rpc is not guest-reachable"),
         );
       }
 

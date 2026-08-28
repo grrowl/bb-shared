@@ -3,6 +3,7 @@ import {
   authzStage,
   denyForPath,
   isApiPath,
+  isGuestDeniedRpcPath,
   scopeFromAuthz,
   type AuthzResponse,
 } from "../src/stages/authz.js";
@@ -252,6 +253,64 @@ describe("authzStage", () => {
     const { router } = fakeRouter({ throws: true });
     const res = expectRespond(await authzStage(router).run(makeCtx()));
     expect(res.status).toBe(403);
+  });
+
+  // M2 (ticket 20): plugin RPC is owner-only. A guest hitting the RPC transport
+  // must be denied at the worker — before /authz is consulted — so the CF
+  // claim.url account-takeover bearer behind getClaimUrl/getWorkerStatus is
+  // never reachable through the guest proxy.
+  it("denies a guest getWorkerStatus RPC with 403 without consulting authz (M2)", async () => {
+    const { router, seen } = fakeRouter({ throws: true });
+    const res = expectRespond(
+      await authzStage(router).run(
+        makeCtx({
+          pathname: "/api/v1/plugins/shared/rpc/getWorkerStatus",
+          method: "POST",
+        }),
+      ),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: "scope",
+      reason: "plugin rpc is not guest-reachable",
+    });
+    // Deny-closed locally — the request was never dispatched over the tunnel.
+    expect(seen()).toBeNull();
+  });
+
+  it("denies a guest getClaimUrl RPC with 403 (M2)", async () => {
+    const { router, seen } = fakeRouter({ throws: true });
+    const res = expectRespond(
+      await authzStage(router).run(
+        makeCtx({
+          pathname: "/api/v1/plugins/shared/rpc/getClaimUrl",
+          method: "POST",
+        }),
+      ),
+    );
+    expect(res.status).toBe(403);
+    expect(seen()).toBeNull();
+  });
+});
+
+describe("isGuestDeniedRpcPath", () => {
+  it("matches the shared plugin RPC transport paths (M2, ticket 22 id)", () => {
+    expect(isGuestDeniedRpcPath("/api/v1/plugins/shared/rpc/getWorkerStatus")).toBe(
+      true,
+    );
+    expect(isGuestDeniedRpcPath("/api/v1/plugins/shared/rpc/getClaimUrl")).toBe(
+      true,
+    );
+    expect(isGuestDeniedRpcPath("/api/v1/plugins/shared/rpc")).toBe(true);
+  });
+
+  it("does not match the authz http route or unrelated paths", () => {
+    // The worker's own bearer-authed authz pull must not be denied.
+    expect(isGuestDeniedRpcPath("/api/v1/plugins/shared/http/authz")).toBe(false);
+    expect(isGuestDeniedRpcPath("/api/v1/threads/T1/send")).toBe(false);
+    expect(isGuestDeniedRpcPath("/api/v1/plugins")).toBe(false);
+    // Guard against a substring/prefix false-positive.
+    expect(isGuestDeniedRpcPath("/api/v1/plugins/shared/rpcish/x")).toBe(false);
   });
 });
 

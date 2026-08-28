@@ -234,10 +234,33 @@ describe("WorkerLifecycle", () => {
     expect(status.state).toBe("live");
     expect(status.healthy).toBe(true);
     expect(status.url).toBe("https://bb-shared-worker.sub.workers.dev");
-    expect(status.claim?.url).toContain("https://claim/");
+    // H1 (ticket 20): the claim bearer is owner-only, via getClaimUrl — never
+    // on the status snapshot / worker-changed broadcast.
+    expect(h.lifecycle.getClaimUrl()?.url).toContain("https://claim/");
     // Record persisted with the minted secret.
     const rec = await createWorkerRecordStore(h.kv).load();
     expect(rec?.tunnelSecret).toBe("secret-0");
+  });
+
+  it("H1: getStatus + published broadcast payloads never carry claim (ticket 20)", async () => {
+    const h = makeHarness();
+    await h.lifecycle.ensureDeployed();
+
+    // A worker is live and a claim URL exists behind the owner-only accessor…
+    expect(h.lifecycle.getClaimUrl()?.url).toContain("https://claim/");
+
+    // …but neither the status snapshot nor ANY worker-changed broadcast (every
+    // publishStatus call is captured in `statuses`) may contain `claim`.
+    const status = h.lifecycle.getStatus();
+    expect("claim" in status).toBe(false);
+    expect(JSON.stringify(status)).not.toContain("claim");
+
+    expect(h.statuses.length).toBeGreaterThan(0);
+    for (const s of h.statuses) {
+      const json = JSON.stringify(s);
+      expect(json).not.toContain("claim");
+      expect(json).not.toContain("https://claim/");
+    }
   });
 
   it("getStatus never leaks apiToken or tunnelSecret", async () => {
@@ -307,5 +330,77 @@ describe("WorkerLifecycle", () => {
     const rec = await createWorkerRecordStore(h.kv).load();
     expect(rec?.tunnelSecret).toBe("secret-1");
     expect(rec?.generation).toBe(1);
+  });
+
+  it("M4: tick() health-fail redeploy dedupes with a concurrent mint (one deploy, not two)", async () => {
+    const kv = fakeKv();
+    let deployCalls = 0;
+    let healthy = true;
+    let holdDeploy = false;
+    const releasers: Array<() => void> = [];
+    let signalHeldDeploy: (() => void) | null = null;
+    const heldDeployStarted = new Promise<void>((r) => (signalHeldDeploy = r));
+
+    const deps: WorkerLifecycleDeps = {
+      recordStore: createWorkerRecordStore(kv),
+      log: { debug() {}, info() {}, warn() {}, error() {} },
+      publishStatus: () => {},
+      getLoopbackBaseUrl: () => "http://127.0.0.1:38886",
+      getAuthzToken: async () => "authz-token",
+      hasTokens: async () => true,
+      bundleWorker: async () => "export default {}",
+      mintTunnelSecret: () => `secret-${deployCalls}`,
+      createTunnel: () => ({ start() {}, stop() {} }),
+      now: () => 1000,
+      fetchImpl: (async () => {
+        if (healthy) return new Response("", { status: 401 });
+        throw new Error("connect refused");
+      }) as unknown as typeof fetch,
+      deployWorker: async () => {
+        deployCalls++;
+        if (holdDeploy) {
+          // Announce that the (blocked) redeploy is in flight, then park until
+          // the test releases it — the window in which a concurrent mint races.
+          signalHeldDeploy?.();
+          signalHeldDeploy = null;
+          await new Promise<void>((r) => releasers.push(r));
+        }
+        return {
+          url: "https://bb-shared-worker.sub.workers.dev",
+          deploymentId: `dep-${deployCalls}`,
+          accountId: `acct-${deployCalls}`,
+          apiToken: `api-${deployCalls}`,
+          expiresAt: null,
+          claim: { url: `https://claim/${deployCalls}`, expiresAt: null },
+        };
+      },
+    };
+    const lifecycle = new WorkerLifecycle(deps);
+
+    // 1. Bring the worker up (deploy #1 — not held).
+    await lifecycle.ensureDeployed();
+    expect(deployCalls).toBe(1);
+
+    // 2. Health now fails; the next deploy blocks so we can interleave a mint.
+    healthy = false;
+    holdDeploy = true;
+
+    // 3. A health-fail tick clears the record and starts the blocked redeploy.
+    // @ts-expect-error exercising the private tick loop body directly
+    const tickP = lifecycle.tick();
+    await heldDeployStarted; // redeploy #2 is now in flight, parked
+
+    // 4. A concurrent mintToken → ensureDeployed must DEDUPE onto the in-flight
+    //    redeploy rather than provisioning a second temp account. (Under the
+    //    pre-fix code, tick() called deploy() directly and this raced to a
+    //    third deploy.)
+    const mintP = lifecycle.ensureDeployed();
+
+    // 5. Release the parked deploy and let both callers settle.
+    releasers.forEach((r) => r());
+    await Promise.all([tickP, mintP]);
+
+    // Exactly one redeploy happened (1 initial + 1), never two.
+    expect(deployCalls).toBe(2);
   });
 });

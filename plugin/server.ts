@@ -51,17 +51,18 @@ export const tokenSchema = z.object({
 });
 export type Token = z.output<typeof tokenSchema>;
 
-// getWorkerStatus payload (issue 07). `url`/`claim` are surfaced to the owner
-// UI (the 16 nav panel reads `claim` for the "claim this worker" nudge); the
+// getWorkerStatus payload (issue 07). `url` is surfaced to the owner UI; the
 // worker's apiToken + tunnelSecret never cross this boundary. `state` drives
 // the deploy/redeploy/health UI; `expiresAt` drives the CF claim countdown.
+//
+// H1 (ticket 20): the CF `claim.url` account-takeover bearer is NOT in this
+// payload — it rode both this RPC and the worker-changed broadcast. The claim
+// URL now flows only through the dedicated owner-only `getClaimUrl` RPC below,
+// which the worker denies to guests (M2); it never appears on a broadcast.
 export const workerStatusSchema = z.object({
   url: z.string().optional(),
   state: z.enum(["idle", "deploying", "live", "unhealthy", "error"]),
   expiresAt: z.number().optional(),
-  claim: z
-    .object({ url: z.string(), expiresAt: z.number().nullable() })
-    .optional(),
   healthy: z.boolean(),
   tunnel: z
     .enum([
@@ -74,6 +75,17 @@ export const workerStatusSchema = z.object({
     .optional(),
 });
 export type WorkerStatus = z.output<typeof workerStatusSchema>;
+
+// getClaimUrl payload (H1, ticket 20). Owner-only: returns the CF claim
+// affordance (an account-takeover bearer). Guest-unreachable because the worker
+// deny-closes every `/api/v1/plugins/shared/rpc/*` path (M2). `null` until a
+// worker is deployed.
+export const claimUrlSchema = z.object({
+  claim: z
+    .object({ url: z.string(), expiresAt: z.number().nullable() })
+    .nullable(),
+});
+export type ClaimUrlResult = z.output<typeof claimUrlSchema>;
 
 // void-returning methods use { ok: true } as their wire payload — zod has no
 // clean "no result" primitive for the strict-JSON envelope, and this matches
@@ -130,6 +142,10 @@ export const rpcContract = defineRpcContract({
   getWorkerStatus: {
     input: z.null(),
     output: workerStatusSchema,
+  },
+  getClaimUrl: {
+    input: z.null(),
+    output: claimUrlSchema,
   },
 });
 
@@ -277,6 +293,14 @@ export default async function plugin(bb: BbPluginApi) {
 
     getWorkerStatus(): WorkerStatus {
       return lifecycle.getStatus();
+    },
+
+    // Owner-only (H1, ticket 20): the CF claim.url is an account-takeover
+    // bearer, so it is delivered on its own RPC — kept off getWorkerStatus and
+    // the worker-changed broadcast — and the worker denies this path to guests
+    // (M2). See worker/src/stages/authz.ts `isGuestDeniedRpcPath`.
+    getClaimUrl(): ClaimUrlResult {
+      return { claim: lifecycle.getClaimUrl() };
     },
   });
 

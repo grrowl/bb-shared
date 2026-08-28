@@ -18,6 +18,7 @@ export {
 export { bundleWorker, type BundleOptions } from "./worker-bundle";
 export {
   deployWorker,
+  redactSecrets,
   WORKER_ENV,
   CfDeployError,
   type DeployInput,

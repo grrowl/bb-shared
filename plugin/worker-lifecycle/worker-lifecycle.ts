@@ -16,15 +16,21 @@ import {
   type SharedTunnelOptions,
   type TunnelState,
 } from "../lib/shared-tunnel";
-import { deployWorker as defaultDeployWorker } from "./cf-deploy";
+import { deployWorker as defaultDeployWorker, redactSecrets } from "./cf-deploy";
 import { mintTunnelSecret as defaultMintTunnelSecret } from "./tunnel-secret";
 import type { WorkerRecord, WorkerRecordStore } from "./worker-record";
 
 // ---------------------------------------------------------------------------
 // Public status shape — the getWorkerStatus RPC payload (issue 07 + 16 nav
-// panel). Deliberately a REDACTED projection of the record: the worker URL and
-// the claim URL are surfaced (the owner needs both), but apiToken and
-// tunnelSecret never leave the backend.
+// panel) AND the worker-changed realtime broadcast. Deliberately a REDACTED
+// projection of the record: the worker URL is surfaced (the owner needs it),
+// but apiToken and tunnelSecret never leave the backend.
+//
+// H1 (ticket 20): the CF `claim.url` is an account-TAKEOVER bearer and is
+// deliberately NOT part of this shape. It rode the worker-changed broadcast and
+// the getWorkerStatus RPC, either of which a guest could potentially observe.
+// The claim URL now flows only through the owner-only `getClaimUrl()` accessor
+// (exposed as an RPC the worker denies to guests, M2) — never on a broadcast.
 // ---------------------------------------------------------------------------
 
 export type WorkerState =
@@ -38,7 +44,6 @@ export interface WorkerStatus {
   url?: string;
   state: WorkerState;
   expiresAt?: number;
-  claim?: { url: string; expiresAt: number | null };
   /** True iff the worker is currently deployed and reachable. */
   healthy: boolean;
   /** Live tunnel connection state, for richer UI (optional). */
@@ -144,7 +149,11 @@ export class WorkerLifecycle {
     return this.record?.url ?? null;
   }
 
-  /** Redacted status snapshot for the getWorkerStatus RPC + owner UI. */
+  /**
+   * Redacted status snapshot for the getWorkerStatus RPC + owner UI + the
+   * worker-changed broadcast. Never carries the CF `claim.url` takeover bearer
+   * (H1, ticket 20) — that is owner-only via `getClaimUrl()`.
+   */
   getStatus(): WorkerStatus {
     const status: WorkerStatus = {
       state: this.state,
@@ -154,9 +163,19 @@ export class WorkerLifecycle {
     if (this.record) {
       status.url = this.record.url;
       if (this.record.expiresAt !== null) status.expiresAt = this.record.expiresAt;
-      if (this.record.claim) status.claim = this.record.claim;
     }
     return status;
+  }
+
+  /**
+   * The CF claim affordance — an account-TAKEOVER bearer (SPEC: "never send to
+   * guests, never log"). Owner-only: exposed via the `getClaimUrl` RPC, which
+   * the worker denies to guests (M2, ticket 20). Deliberately kept OFF
+   * `getStatus()` / the worker-changed broadcast (H1) so the bearer can never
+   * ride a channel a guest might observe. Null until a worker is deployed.
+   */
+  getClaimUrl(): { url: string; expiresAt: number | null } | null {
+    return this.record?.claim ?? null;
   }
 
   /**
@@ -167,12 +186,24 @@ export class WorkerLifecycle {
    */
   async ensureDeployed(): Promise<void> {
     if (this.record && this.state === "live") return;
+    return this.runDeploy();
+  }
+
+  /**
+   * The single serialized deploy entry (M4, ticket 20). BOTH the lazy
+   * `ensureDeployed` path (mintToken) and `tick()`'s health-fail redeploy
+   * funnel through here, so at most one deploy is ever in flight: a concurrent
+   * `mintToken` + health-fail can no longer provision two temp accounts and
+   * orphan a live secret-bearing worker (leaking its SharedTunnel). Swallows
+   * deploy errors — `deploy()` already sets the `error` state and logs a
+   * redacted reason — so neither caller ever sees a throw (minting a token must
+   * not fail on a worker hiccup; a tick must not crash the service loop).
+   */
+  private runDeploy(): Promise<void> {
     if (this.deployInFlight) return this.deployInFlight;
     this.deployInFlight = this.deploy()
-      .catch((err) => {
-        this.deps.log.warn(
-          `ensureDeployed: deploy failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+      .catch(() => {
+        // deploy() has already logged (redacted) and set state = "error".
       })
       .finally(() => {
         this.deployInFlight = null;
@@ -228,13 +259,16 @@ export class WorkerLifecycle {
       return;
     }
 
-    // Health failed → wipe + fresh deploy (SPEC §"Worker lifecycle").
+    // Health failed → wipe + fresh deploy (SPEC §"Worker lifecycle"). Route
+    // through the serialized `runDeploy` (NOT `deploy()` directly) so a
+    // concurrent mintToken → ensureDeployed dedupes onto this same deploy
+    // rather than provisioning a second temp account (M4, ticket 20).
     this.deps.log.warn("worker health check failed — wiping + redeploying");
     await this.deps.recordStore.clear();
     this.teardownTunnel();
     this.record = null;
     this.setState("unhealthy");
-    await this.deploy();
+    await this.runDeploy();
   }
 
   // -------------------------------------------------------------------------
@@ -285,8 +319,10 @@ export class WorkerLifecycle {
       this.setState("live");
       this.deps.log.info(`worker deployed at ${record.url}`);
     } catch (err) {
+      // Redact before logging: a CF SDK error may embed the tunnel secret /
+      // authz token from the upload request body (M3, ticket 20).
       this.deps.log.error(
-        `worker deploy failed: ${err instanceof Error ? err.message : String(err)}`,
+        `worker deploy failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
       );
       this.setState("error");
       throw err;

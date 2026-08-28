@@ -63,17 +63,15 @@ function errorText(error: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Worker status. The RPC contract's `WorkerStatus` is `{ url?, healthy }`; the
-// SPEC's persisted worker record additionally carries `claim: { url, ... }`
-// (SPEC §"Worker lifecycle"). Issue 07 may widen the wire shape to include it,
-// so we read `claim` defensively off the response rather than depend on it —
-// today the call rejects (stub) and neither field is present.
+// Worker status. The RPC contract's `WorkerStatus` is `{ url?, healthy, ... }`.
+// The CF `claim.url` is deliberately NOT on this payload (H1, ticket 20) — it
+// is an account-takeover bearer, fetched separately via the owner-only
+// `getClaimUrl` RPC (see `useClaimUrl`).
 // ---------------------------------------------------------------------------
 
 interface WorkerStatusView {
   url?: string;
   healthy: boolean;
-  claim?: { url?: string };
 }
 
 type WorkerState =
@@ -111,6 +109,39 @@ function useWorkerStatus(): { state: WorkerState; refetch: () => void } {
   // the pill tracks them live.
   useRealtime(REALTIME_CHANNELS.workerChanged, () => refetch());
   return { state, refetch };
+}
+
+// ---------------------------------------------------------------------------
+// Claim URL (owner-only). H1 (ticket 20): the CF claim.url is an account-
+// takeover bearer, so it is deliberately kept OFF getWorkerStatus and the
+// worker-changed broadcast. The owner pulls it on demand via the dedicated
+// `getClaimUrl` RPC (the worker denies that path to guests, M2). Refetched on
+// the same worker-changed signal so the nudge appears as soon as a worker
+// deploys. A rejection (stub / no worker) collapses to "no claim link yet".
+// ---------------------------------------------------------------------------
+
+function useClaimUrl(): string | undefined {
+  const rpc = useRpc<typeof rpcContract>();
+  const [claimUrl, setClaimUrl] = React.useState<string | undefined>(undefined);
+  const requestRef = React.useRef(0);
+
+  const refetch = React.useCallback(() => {
+    const requestId = ++requestRef.current;
+    rpc
+      .call("getClaimUrl", null)
+      .then((res) => {
+        if (requestRef.current !== requestId) return;
+        setClaimUrl(res.claim?.url ?? undefined);
+      })
+      .catch(() => {
+        if (requestRef.current !== requestId) return;
+        setClaimUrl(undefined);
+      });
+  }, [rpc]);
+
+  React.useEffect(() => refetch(), [refetch]);
+  useRealtime(REALTIME_CHANNELS.workerChanged, () => refetch());
+  return claimUrl;
 }
 
 function WorkerStatusPill({ state }: { state: WorkerState }) {
@@ -174,10 +205,9 @@ function describeWorker(state: WorkerState): {
  * guests, and we open it via the host's browser preference rather than
  * rendering it as raw copyable text.
  */
-function WorkerClaimNudge({ state }: { state: WorkerState }) {
+function WorkerClaimNudge() {
   const navigate = useBbNavigate();
-  const claimUrl =
-    state.kind === "ready" ? state.status.claim?.url : undefined;
+  const claimUrl = useClaimUrl();
 
   if (claimUrl === undefined) {
     return (
@@ -670,7 +700,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               </Button>
             </div>
           </div>
-          <WorkerClaimNudge state={worker.state} />
+          <WorkerClaimNudge />
           {flash !== null ? (
             <p className="text-xs text-muted-foreground" role="status">
               {flash}

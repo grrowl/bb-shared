@@ -48,6 +48,9 @@ envelope (`account.{id,apiToken,expiresAt,…}` + `claim.{token,url,expiresAt}`)
 The `claim.url` is a **dashboard deep link**, formatted
 `https://dash.cloudflare.com/claim-preview?claimToken=<CLAIM_TOKEN>`, `expiresAt`
 = 60 minutes. [[claim-deployments]](https://developers.cloudflare.com/workers/platform/claim-deployments/#integrate-with-the-rest-api)
+> **verified 2026-08-28** (`research/cf-live-verification.md` TASK 1a/1c/1d): live
+> provision returned exactly this envelope shape; `claim.url` format confirmed
+> verbatim; both `account.expiresAt` and `claim.expiresAt` land ~60.0 min out.
 This matches the earlier spike's read (`research/cf-temp-deployments.md`:
 "There is no webhook or callback from CF telling us the account has been
 claimed").
@@ -534,6 +537,14 @@ standard authorization-code+PKCE mechanics; the two endpoint URLs and the exact
 account-scope identifier must be confirmed from the CF OAuth API reference (or by
 inspecting a `wrangler login`, which already performs this exact flow) before
 implementation. Everything else here is doc-supported.
+> **verified 2026-08-28** (`research/cf-live-verification.md` TASK 2, from wrangler
+> source `@cloudflare/workers-auth`): authorize = `https://dash.cloudflare.com/oauth2/auth`,
+> token = `https://dash.cloudflare.com/oauth2/token`, revoke = `.../oauth2/revoke`.
+> The scope names `workers-platform.read/.write` used above are **WRONG** — real
+> ids are `resource:action`: `account:read`, `workers:read`, and `workers_scripts:write`
+> (which also covers workers.dev **subdomain** read/write — there is no standalone
+> subdomain scope). `token_endpoint_auth_method: "none"` for the public PKCE client;
+> no client_secret is issued to public clients. Still open: refresh-token lifetime.
 
 ### 11.2 Connect flow (authorization-code + PKCE)
 
@@ -729,6 +740,14 @@ confirm them from the CF OAuth API reference or by inspecting `wrangler login`
 before implementation. And close §10 empirically (the two-account claim test)
 even though OAuth makes correctness independent of the answer — it still tells us
 whether guest URLs an owner already shared survive a claim.
+> **verified 2026-08-28** (`research/cf-live-verification.md` TASK 2): authorize/token
+> URLs and scope identifiers CLOSED (see the §11.1 note above). Refresh-token
+> **rotation** CLOSED — CF may rotate on each exchange; persist the new token when
+> the response includes one. Refresh-token **lifetime** STILL OPEN (undocumented,
+> not in wrangler source). The §10 two-account claim test is STILL OPEN — not run
+> here (needs the owner's real CF account + a login, out of scope for this spike).
+> Also verified live: WebSocket + Durable Object both work on an anonymous temp
+> deployment (101 upgrade into a SQLite-backed DO), so the transport premise holds.
 
 **Trust-model consequence to accept explicitly:** OAuth introduces a long-lived
 `cfRefreshToken` to the owner's real CF account as a persisted secret, replacing a

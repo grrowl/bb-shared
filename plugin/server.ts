@@ -24,6 +24,7 @@ import {
   bundleWorker,
   createWorkerRecordStore,
 } from "./worker-lifecycle";
+import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
 // Data model (SPEC.md §"Data model"). In-memory in v0; the shape is designed
@@ -135,16 +136,14 @@ export const rpcContract = defineRpcContract({
 export type RpcContract = typeof rpcContract;
 
 // ---------------------------------------------------------------------------
-// Realtime channel names. The frontend subscribes with `useRealtime(...)` to
-// refetch when state changes; broadcast from wherever the mutation happens.
+// Realtime channel names. Defined in the pure-string module
+// `./lib/realtime-channels` (issue 18) so frontend consumers can import the
+// names without dragging this Node-only module (and its `node:crypto` token
+// store) into the browser bundle. Re-exported here for backward compatibility
+// with existing backend importers.
 // ---------------------------------------------------------------------------
 
-export const REALTIME_CHANNELS = {
-  /** Any token mutation (mint/rename/delete/share add/remove/update). */
-  tokensChanged: "tokens-changed",
-  /** Worker deploy / health transitions. Payload: { url?, healthy }. */
-  workerChanged: "worker-changed",
-} as const;
+export { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
 // Plugin factory. Bodies stubbed with `throw new Error("not implemented: X")`

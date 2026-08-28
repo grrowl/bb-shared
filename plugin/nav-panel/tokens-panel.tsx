@@ -38,6 +38,7 @@ import {
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import { cn } from "../lib/utils.js";
+import { REALTIME_CHANNELS } from "../lib/realtime-channels.js";
 import type { Perm, Token, rpcContract } from "../server.js";
 import {
   AlertDialog,
@@ -49,13 +50,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "./alert-dialog.js";
-
-// Kept in lockstep with `REALTIME_CHANNELS.tokensChanged` in `server.ts`.
-// A direct value import from `server.ts` pulls the whole backend module (and
-// its `node:crypto` token store, which esbuild refuses to bundle into the
-// browser `app.js`) into the frontend. The channel names are stable strings —
-// inlining is the cheap, correct thing to do (same call as share-popover.tsx).
-const TOKENS_CHANGED_CHANNEL = "tokens-changed";
 
 // `getWorkerStatus` is stubbed to throw "not implemented" until issue 07 wires
 // the CF deploy pipeline; its message is matched loosely so the pill can render
@@ -113,9 +107,9 @@ function useWorkerStatus(): { state: WorkerState; refetch: () => void } {
   }, [rpc]);
 
   React.useEffect(() => refetch(), [refetch]);
-  // Worker deploy / health transitions ride their own channel in server.ts
-  // (`worker-changed`); subscribe so the pill tracks them live.
-  useRealtime("worker-changed", () => refetch());
+  // Worker deploy / health transitions ride their own channel; subscribe so
+  // the pill tracks them live.
+  useRealtime(REALTIME_CHANNELS.workerChanged, () => refetch());
   return { state, refetch };
 }
 
@@ -242,7 +236,7 @@ function useTokens(): {
   React.useEffect(() => refetch(), [refetch]);
   // Coarse "something changed" channel: any mint / rename / delete / share
   // add / remove / update anywhere refetches the whole list.
-  useRealtime(TOKENS_CHANGED_CHANNEL, () => refetch());
+  useRealtime(REALTIME_CHANNELS.tokensChanged, () => refetch());
   return { tokens, error, refetch };
 }
 

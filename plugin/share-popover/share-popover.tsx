@@ -38,15 +38,9 @@ import {
   PopoverTrigger,
 } from "../components/ui/popover.js";
 import { cn } from "../lib/utils.js";
+import { REALTIME_CHANNELS } from "../lib/realtime-channels.js";
 import type { Perm, Token, rpcContract } from "../server.js";
 import { subscribeShareOpen } from "./open-bus.js";
-
-// Kept in lockstep with `REALTIME_CHANNELS.tokensChanged` in `server.ts`.
-// A direct value import from `server.ts` pulls the whole server module (and
-// its node-only token store, whose `node:crypto` import esbuild refuses to
-// bundle into the browser `app.js`) into the frontend bundle. The channel
-// names are stable strings — inlining is the cheap, correct thing to do.
-const TOKENS_CHANGED_CHANNEL = "tokens-changed";
 
 // One row's worth of state — the two buttons per token can be pending
 // independently, so we key by `${tokenId}:${perm}`.
@@ -107,7 +101,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   // Any token mutation anywhere (mint / rename / delete / share add / remove
   // / update) refetches. The channel is coarse on purpose — a fine-grained
   // patch stream would need consumer-side reducers per event kind.
-  useRealtime(TOKENS_CHANGED_CHANNEL, () => {
+  useRealtime(REALTIME_CHANNELS.tokensChanged, () => {
     load();
   });
 

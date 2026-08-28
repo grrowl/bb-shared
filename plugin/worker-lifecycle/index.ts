@@ -5,6 +5,8 @@ export {
   type WorkerLifecycleDeps,
   type WorkerState,
   type WorkerStatus,
+  type ConnectionState,
+  type ConnectionStatus,
   type TunnelLike,
 } from "./worker-lifecycle";
 export {
@@ -20,6 +22,7 @@ export {
 export { bundleWorker, type BundleOptions } from "./worker-bundle";
 export {
   deployWorker,
+  uploadWorkerScript,
   redactSecrets,
   WORKER_ENV,
   CfDeployError,

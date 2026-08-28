@@ -63,10 +63,12 @@ Parent: [SPEC.md](../../SPEC.md)
 
 - SPA data-testid stability across bb versions — CI pinned per
   `BB_VERSION`; needs re-run on each bump.
-- v1 candidate: encrypt KV values with a device-tied key (macOS Keychain,
-  etc.), prioritising the CF `apiToken` (the crown-jewel at-rest item — see
-  21 / SPEC §"Trust model"). Also v1 candidates: TLS-fingerprint pinning
-  (L3), best-effort delete of the prior-gen CF account on redeploy (L4).
+- **DONE (29): encrypt KV values with a device-tied key** (macOS Keychain,
+  0600-file fallback elsewhere). AES-256-GCM per secret field, versioned
+  envelope, encrypt-on-save/decrypt-on-load in the record store, wiped +
+  fresh-bootstrap on decrypt failure. See SPEC §"Trust model" (At-rest
+  encryption). Remaining v1 candidates: TLS-fingerprint pinning (L3),
+  best-effort delete of the prior-gen CF account on redeploy (L4).
 
 ## Status — guest transport now COMPLETE (27 landed)
 
@@ -83,7 +85,8 @@ already functional. Guest transport is the last missing link and is now in.
 
 Resolved: 01–12, 14–27, 30. Guest half of the e2e runbook is now runnable.
 
-- E2E runbook at `docs/e2e-runbook.md` (guest half currently unrunnable — 27).
+- E2E runbook at `docs/e2e-runbook.md` (guest half unblocked by 27; not yet
+  walked against a real bb — transport proven live via stub-bb e2e).
 - Adversarial review at `research/tunnel-secret-review.md`.
 - Trust model documented in SPEC §"Trust model".
 - Git history is per-ticket commits (one mixed commit `8c37eb1` from
@@ -125,6 +128,14 @@ now `/authz`. Not yet committed.
   real anonymous CF temp deploy: guest HTTP request and WS both round-trip
   through a stub bb behind the local `SharedTunnel` (evidence in the ticket
   Answer). Decision was "keep hand-rolled, port bb's DO" — see ticket.
+- **29 — device-tied KV encryption (HIGH, prereq for 28). RESOLVED.** Persisted
+  worker-record secret fields (`apiToken`, `tunnelSecret`, `claim.url`; issue
+  28's `cfRefreshToken`) are AES-256-GCM-encrypted at rest under a random
+  32-byte device key (macOS Keychain via the `security` CLI; `0600`-file
+  fallback elsewhere, documented weaker). Versioned envelope, encrypt-on-save /
+  decrypt-on-load in `createWorkerRecordStore`, legacy plaintext migrated on
+  first read, undecryptable record wiped → fresh bootstrap. New module
+  `plugin/lib/device-key/`; 33 new tests; SPEC §"Trust model" updated.
 - **30 — live deploy pipeline fixes (CRITICAL). RESOLVED.** The CF
   live-verification spike (`research/cf-live-verification.md`) found `deployWorker`
   broken in four live-API places: PoW off-by-one hash (`checkpoints[0]` must be
@@ -166,9 +177,10 @@ Captured from ticket answers during v0 delivery:
 ## v1 candidates (from security review)
 
 - **KV encryption** with a device-tied key (macOS Keychain / equivalent).
-  `apiToken` is the crown-jewel at-rest item — attacker with it can
-  redeploy a malicious worker under our name, making tunnel-secret
-  rotation moot.
+  **RESOLVED (29).** `apiToken`/`tunnelSecret`/`claim.url` (and issue 28's
+  `cfRefreshToken`) now AES-256-GCM-encrypted at rest under a Keychain-held
+  device key; non-secret metadata stays plaintext. Prerequisite for the OAuth
+  refresh-token persistence in 28.
 - **TLS-fingerprint pinning** on the tunnel client's outbound to
   `*.workers.dev` — captures the initial cert fingerprint, rejects
   drift. Closes the CF-account-control MITM path (L3 residual).

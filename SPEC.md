@@ -273,13 +273,33 @@ shadcn `AlertDialog` inside the panel.
 
 ## Trust model
 
-v0 draws its trust boundary at the **owner's local machine**. Everything the
-plugin persists — the CF temp-account `apiToken`, the tunnel handshake secret,
-and the `claim.url` — lives as plaintext JSON in `bb.storage.kv` (bb.db).
-Anyone (or anything) with local read access to that store is inside the trust
-boundary and is, by construction, already able to compromise the deployment.
-This is deliberate for v0 and stated here so it is not mistaken for an
-oversight. (Findings M5, L3, L4 from `research/tunnel-secret-review.md`.)
+v0 draws its trust boundary at the **owner's local machine**. The non-secret
+worker metadata (url, accountId, scriptName, generation) lives as plaintext JSON
+in `bb.storage.kv` (bb.db). Anyone (or anything) with local read access to that
+store is inside the trust boundary and is, by construction, already able to
+compromise the deployment. This is deliberate for v0 and stated here so it is
+not mistaken for an oversight. (Findings M5, L3, L4 from
+`research/tunnel-secret-review.md`.)
+
+**At-rest encryption of persisted secrets (issue 29).** The *secret* fields of
+the worker record — the CF temp-account `apiToken`, the tunnel handshake
+secret, the `claim.url`, and (issue 28) the long-lived `cfRefreshToken` — are no
+longer plaintext at rest. Each is encrypted with AES-256-GCM under a random
+32-byte **device-tied key** before it touches `bb.storage.kv`, using a versioned
+envelope so the primitive can rotate. The key is generated once on first use and
+held in the **macOS Keychain** (the owner runs the plugin inside their bb server
+process on their Mac); on a platform without a wired-up secure store it degrades
+to a `0600` file under the bb data dir, documented as weaker because the key
+then sits beside the ciphertext. The key is never written to the repo or into
+the kv. Consequence: a copied `bb.db` / kv blob is useless off the machine that
+minted the key — a record that fails to decrypt (missing key, other machine,
+tamper) is wiped and the plugin degrades to a fresh bootstrap, never a crash. A
+pre-issue-29 plaintext record is read once and re-saved encrypted. This is what
+makes issue 28's persistence of a real-account refresh token acceptable. The
+device key itself remains inside the local-trust boundary (a co-installed
+malicious plugin or full-data-dir copy on the same machine can still reach it);
+the encryption defends specifically against a copied at-rest blob leaving the
+device.
 
 **Local-trust boundary.** The following are assumed trusted in v0:
 
@@ -313,9 +333,9 @@ redeploy), so the residual reduces to: guest URLs against the old worker return
 5xx until CF cleans it up (≤60 min unclaimed). Guest URLs also change on
 redeploy, so the window is narrow and self-closing.
 
-**v1 candidates.** Encrypt KV values with a device-tied key (macOS Keychain,
-etc.), prioritising `apiToken`; add TLS-fingerprint pinning; wrap the CF claim
-in a proper OAuth flow.
+**v1 candidates.** ~~Encrypt KV values with a device-tied key (macOS Keychain,
+etc.), prioritising `apiToken`~~ — **done (issue 29)**, see "At-rest encryption"
+above; add TLS-fingerprint pinning; wrap the CF claim in a proper OAuth flow.
 
 ## Non-goals
 

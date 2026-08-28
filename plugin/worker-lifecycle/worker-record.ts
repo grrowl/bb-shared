@@ -11,10 +11,37 @@
 // secret), and `claim.url` (owner-only claim bearer) all live in this record.
 // They are persisted locally only, never logged, and never returned to the
 // frontend or guests (see getWorkerStatus, which projects a redacted subset).
+//
+// AT REST (issue 29): when a `KeyProvider` is supplied, these SECRET fields are
+// encrypted with a device-tied key before they touch `bb.storage.kv`
+// (AES-256-GCM per field, see `../lib/device-key`). The non-secret metadata
+// stays plaintext and readable. A record that fails to decrypt (missing key,
+// other machine, tamper) is wiped and treated as absent — the same degrade-to-
+// fresh-bootstrap path as a malformed blob. Without a KeyProvider the store
+// falls back to the legacy plaintext behaviour (used by unit tests that do not
+// exercise encryption).
 import { z } from "zod";
+import {
+  decryptRecord,
+  encryptRecord,
+  SecretEnvelopeError,
+  type KeyProvider,
+  type SecretFieldPath,
+} from "../lib/device-key";
 
 /** KV key the worker record lives under. */
 export const WORKER_RECORD_KEY = "worker-record";
+
+/**
+ * Secret fields (dot-paths) encrypted at rest by issue 29. Everything else in
+ * the record is non-secret metadata and stays plaintext. `claim.url` is nested
+ * and nullable; the crypto layer skips it when `claim` is null.
+ */
+export const WORKER_RECORD_SECRET_FIELDS: readonly SecretFieldPath[] = [
+  "apiToken",
+  "tunnelSecret",
+  "claim.url",
+];
 
 export const workerRecordSchema = z.object({
   /** CF deployment/script identifier for this generation. */
@@ -54,24 +81,94 @@ export interface WorkerRecordStore {
   clear(): Promise<void>;
 }
 
+/** Options for {@link createWorkerRecordStore}. */
+export interface WorkerRecordStoreOptions {
+  /**
+   * Device-tied key source (issue 29). When present, secret fields are
+   * encrypted on save and decrypted on load; a legacy plaintext record is
+   * transparently re-saved encrypted on first load. When absent, the store
+   * reads/writes plaintext (legacy behaviour).
+   */
+  keyProvider?: KeyProvider;
+  /** Optional logger for at-rest diagnostics (never logs secret material). */
+  log?: {
+    warn?(msg: string, meta?: unknown): void;
+    info?(msg: string, meta?: unknown): void;
+  };
+}
+
 /**
  * KV-backed record store. `load` validates the stored blob and treats a
- * malformed record as absent (wiping it), so a schema change across versions
- * degrades to a fresh bootstrap rather than a crash.
+ * malformed record — or one whose secret fields cannot be decrypted (issue 29:
+ * missing key, other machine, tamper) — as absent, wiping it, so it degrades to
+ * a fresh bootstrap rather than a crash.
+ *
+ * When a `keyProvider` is supplied, the SECRET fields
+ * ({@link WORKER_RECORD_SECRET_FIELDS}) are encrypted at rest with a device-tied
+ * key; non-secret metadata stays plaintext. A pre-encryption plaintext record
+ * is read once and re-saved encrypted (migration), after which the plaintext is
+ * gone from the kv.
  */
-export function createWorkerRecordStore(kv: RecordKv): WorkerRecordStore {
+export function createWorkerRecordStore(
+  kv: RecordKv,
+  options: WorkerRecordStoreOptions = {},
+): WorkerRecordStore {
+  const { keyProvider, log } = options;
+
   return {
     async load() {
       const raw = await kv.get<unknown>(WORKER_RECORD_KEY);
       if (raw === undefined || raw === null) return null;
-      const parsed = workerRecordSchema.safeParse(raw);
+
+      let candidate: unknown = raw;
+      let migrated = false;
+      if (keyProvider) {
+        try {
+          const key = await keyProvider.getKey();
+          const dec = decryptRecord(raw, key, WORKER_RECORD_SECRET_FIELDS);
+          candidate = dec.record;
+          migrated = dec.migrated;
+        } catch (err) {
+          // Undecryptable secret: wrong key / other machine / tamper. Wipe and
+          // degrade to fresh bootstrap — never crash (issue 29).
+          if (err instanceof SecretEnvelopeError) {
+            log?.warn?.(
+              "bb-shared: worker record could not be decrypted; wiping and re-bootstrapping",
+            );
+            await kv.delete(WORKER_RECORD_KEY);
+            return null;
+          }
+          throw err; // a key-provider outage is not a corrupt-record signal
+        }
+      }
+
+      const parsed = workerRecordSchema.safeParse(candidate);
       if (!parsed.success) {
         await kv.delete(WORKER_RECORD_KEY);
         return null;
       }
+
+      // Legacy plaintext record with a key available: re-save encrypted so the
+      // plaintext falls out of the kv.
+      if (keyProvider && migrated) {
+        log?.info?.(
+          "bb-shared: migrating plaintext worker record to encrypted at-rest storage",
+        );
+        await this.save(parsed.data);
+      }
       return parsed.data;
     },
     async save(record) {
+      if (keyProvider) {
+        const key = await keyProvider.getKey();
+        const atRest = encryptRecord(
+          record,
+          key,
+          WORKER_RECORD_SECRET_FIELDS,
+        );
+        await kv.set(WORKER_RECORD_KEY, atRest);
+        return;
+      }
       await kv.set(WORKER_RECORD_KEY, record);
     },
     async clear() {

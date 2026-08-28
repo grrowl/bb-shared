@@ -67,15 +67,21 @@ Parent: [SPEC.md](../../SPEC.md)
 ## Frontier
 
 Rounds 1–5 done. Resolved: 01–06, 08–12, 14–16, 18, 19.
+Round 6 in flight: 17.
 
-Currently unblocked: **17** — the last v0 ticket.
+Adversarial review of tunnel-secret design **complete** — see
+`research/tunnel-secret-review.md`. Verdict: **CONDITIONAL SHIP**.
+Findings translated into two tickets:
 
-Round 6:
+- **20** — fix HIGH + MEDIUM findings (SHIP BLOCKER): claim.url
+  reachable to guests via realtime + RPC; RPC path unproven guest-
+  unreachable; CF SDK error path can leak secrets; deploy-race in
+  tick() bypasses dedupe.
+- **21** — LOW findings + accepted residuals (polish): doc contradictions,
+  health-check sharpening, TLS pinning residual, KV plaintext trust-model
+  documentation.
 
-- **17** e2e smoke — manual runbook walking the whole flow.
-
-Separately in flight: adversarial review of the tunnel-secret design
-(findings will land in `research/tunnel-secret-review.md`).
+Post-17, the frontier is: **20 (blocker), then 21.**
 
 Separately, whenever you want:
 

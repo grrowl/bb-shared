@@ -190,4 +190,48 @@ Two caveats carried forward:
   its confirmation probe. Decide whether confirmation should run regardless of
   token count once a claim link has been opened.
 
+## OAuth constants — CORRECTED from the CF live-verification spike (2026-08-28)
+
+Caveat #1 above ("exact authorize/token endpoint URLs, the full account-scope
+identifiers, and refresh-token lifetimes are not on the OAuth pages") is now
+mostly CLOSED. The values below are authoritative from wrangler's shipped OAuth
+package (`@cloudflare/workers-auth`) plus the CF create-oauth-client doc, with
+`file:line` citations in
+[research/cf-live-verification.md](../../research/cf-live-verification.md)
+TASK 2. This is an append-only correction — the design text above is left as
+written; where it conflicts, THESE values win.
+
+- Endpoints (hardcode all three):
+  - authorize: `https://dash.cloudflare.com/oauth2/auth`
+  - token: `https://dash.cloudflare.com/oauth2/token` (both the auth-code and the
+    refresh exchange)
+  - revoke: `https://dash.cloudflare.com/oauth2/revoke`
+  (staging domain is `dash.staging.cloudflare.com`.)
+- Scopes — the design's `workers-platform.read` / `workers-platform.write` names
+  DO NOT EXIST. The real format is `resource:action` (colon). The minimum viable
+  set for this plugin (list accounts, read a worker's subdomain, update/delete a
+  script) is:
+  - `account:read`
+  - `workers:read`
+  - `workers_scripts:write` — this is what covers workers.dev **subdomain**
+    read/set; there is NO standalone subdomain scope. Make it an OPTIONAL scope
+    so a read-only owner can decline write.
+  - `offline_access` is appended automatically by CF to obtain a refresh token;
+    do not list it explicitly as a granted capability.
+- Public client: register with `token_endpoint_auth_method: "none"` (a public
+  PKCE client gets NO client_secret — nothing secret ships in the plugin;
+  setting a client public is permanent). PKCE is required and must be **S256**.
+  Redirect is a fixed loopback: `http://127.0.0.1:<port>/oauth/callback`
+  (wrangler uses `http://localhost:8976/oauth/callback`). Only the
+  authorization-code grant is supported for third-party clients.
+- Refresh tokens ROTATE: CF may return a new `refresh_token` on each exchange
+  (Ory Hydra rotation + grace period). The design MUST persist the rotated token
+  whenever the response includes one, and keep the old one when it does not
+  (RFC 6749 §6). This feeds the `cfRefreshToken` persistence and issue 29's
+  device-tied encryption.
+
+Still OPEN (the one part of caveat #1 not closed): the absolute refresh-token
+LIFETIME (TTL) is undocumented and not hardcoded in wrangler; rotation-with-grace
+is confirmed, the TTL is not.
+
 ## Comments

@@ -26,11 +26,15 @@ describe("solvePow", () => {
   it("chains g SHA-256 rounds per segment (known-answer, k=1 g=1)", () => {
     const seed = Buffer.alloc(32, 0);
     const out = Buffer.from(solvePow(seed, 1, 1), "base64");
-    // checkpoint[0] = seed, checkpoint[1] = sha256(seed).
+    // CF's verifier seeds the chain with ONE hash of the seed, so
+    // checkpoint[0] = sha256(seed), checkpoint[1] = sha256(sha256(seed)).
+    // (Seeding with the raw seed is what CF rejects as pow_invalid — see
+    // research/cf-live-verification.md TASK 1 bug 1.)
     expect(out.length).toBe(64);
-    expect(out.subarray(0, 32).equals(seed)).toBe(true);
-    const expected = createHash("sha256").update(seed).digest();
-    expect(out.subarray(32, 64).equals(expected)).toBe(true);
+    const h1 = createHash("sha256").update(seed).digest();
+    const h2 = createHash("sha256").update(h1).digest();
+    expect(out.subarray(0, 32).equals(h1)).toBe(true);
+    expect(out.subarray(32, 64).equals(h2)).toBe(true);
   });
 
   it("produces k+1 checkpoints", () => {
@@ -50,11 +54,11 @@ describe("solvePow", () => {
     );
   });
 
-  it("decodes a base64 seed via solveChallenge", () => {
+  it("decodes a base64url seed via solveChallenge", () => {
     const seed = Buffer.alloc(32, 1);
     const solved = solveChallenge({
       challengeToken: "tok",
-      seed: seed.toString("base64"),
+      seed: seed.toString("base64url"),
       k: 2,
       g: 2,
     });

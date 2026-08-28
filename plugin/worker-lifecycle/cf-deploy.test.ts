@@ -31,26 +31,38 @@ describe("redactSecrets", () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end: an SDK error that echoes the secret must be scrubbed.
+// End-to-end pipeline over a faked CF REST (fetch is the only seam now — the
+// upload is a raw multipart PUT, not the `cloudflare` SDK, per ticket 30 bug 3).
 // ---------------------------------------------------------------------------
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
 }
 
-/** Fake CF REST for provisioning; the SDK upload is where the throw happens. */
-function provisioningFetch(): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+interface FakeCfOptions {
+  /** Override the script-upload PUT (default: succeeds with a deploymentId). */
+  onUpload?: () => Promise<Response>;
+  /** Records the enable-route POST body (bug 4). */
+  onEnableRoute?: (body: unknown) => void;
+  /** Status the propagated workers.dev URL serves (default 401 = live). */
+  serveStatus?: number;
+}
+
+/** A fake CF REST + workers.dev origin driving the whole deploy pipeline. */
+function fakeCf(opts: FakeCfOptions = {}): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const u = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+
     if (u.endsWith("/provisioning/previews/challenge")) {
       return jsonResponse({
         success: true,
         result: {
           challengeToken: "tok",
-          seed: Buffer.alloc(32, 0).toString("base64"),
+          seed: Buffer.alloc(32, 0).toString("base64url"),
           k: 1,
           g: 1,
         },
@@ -60,12 +72,31 @@ function provisioningFetch(): typeof fetch {
       return jsonResponse({
         success: true,
         result: {
-          account: { id: "acct-1", apiToken: "cf-api-token" },
+          account: { id: "acct-1", apiToken: "cf-api-token", expiresAt: null },
           claim: { token: "ct", url: "https://claim.example/x", expiresAt: null },
         },
       });
     }
-    throw new Error(`unexpected fetch: ${u}`);
+    // Script upload (raw multipart PUT).
+    if (method === "PUT" && /\/workers\/scripts\/[^/]+$/.test(u)) {
+      return opts.onUpload
+        ? opts.onUpload()
+        : jsonResponse({ success: true, result: { id: "dep-1" } });
+    }
+    // Account subdomain read.
+    if (method === "GET" && u.endsWith("/workers/subdomain")) {
+      return jsonResponse({ success: true, result: { subdomain: "sub" } });
+    }
+    // Per-script workers.dev route enable (bug 4).
+    if (method === "POST" && /\/workers\/scripts\/[^/]+\/subdomain$/.test(u)) {
+      opts.onEnableRoute?.(init?.body ? JSON.parse(String(init.body)) : undefined);
+      return jsonResponse({ success: true, result: { enabled: true } });
+    }
+    // The workers.dev URL itself (route-propagation probe).
+    if (u.startsWith("https://bb-shared-worker.sub.workers.dev")) {
+      return new Response("", { status: opts.serveStatus ?? 401 });
+    }
+    throw new Error(`unexpected fetch: ${method} ${u}`);
   }) as unknown as typeof fetch;
 }
 
@@ -83,32 +114,48 @@ const input: DeployInput = {
   migrationTag: "v1",
 };
 
+describe("deployWorker pipeline", () => {
+  it("uploads, enables the workers.dev route, and returns the live URL", async () => {
+    let enableBody: unknown;
+    const result = await deployWorker(input, {
+      fetchImpl: fakeCf({ onEnableRoute: (b) => (enableBody = b) }),
+      maxAttempts: 1,
+      sleep: async () => {},
+      propagationProbes: 3,
+      propagationIntervalMs: 0,
+    });
+
+    expect(result.url).toBe("https://bb-shared-worker.sub.workers.dev");
+    expect(result.deploymentId).toBe("dep-1");
+    expect(result.accountId).toBe("acct-1");
+    // Bug 4: the per-script route MUST be enabled after upload.
+    expect(enableBody).toEqual({ enabled: true, previews_enabled: false });
+  });
+});
+
 describe("deployWorker secret redaction (M3, ticket 20)", () => {
   it("scrubs the secret from both the logged warning and the thrown error", async () => {
-    // A clientFactory whose scripts.update throws an error whose message echoes
-    // the request body — the exact leak the review flagged.
-    const clientFactory = () =>
-      ({
-        workers: {
-          scripts: {
-            update: async () => {
-              throw new Error(
-                `CF 400: invalid binding TUNNEL_SECRET=${TUNNEL_SECRET} AUTHZ_TOKEN=${AUTHZ_TOKEN}`,
-              );
+    // An upload failure whose CF error message echoes the request body (the
+    // exact leak the review flagged) must be scrubbed on every path.
+    const onUpload = async () =>
+      jsonResponse(
+        {
+          success: false,
+          errors: [
+            {
+              code: 400,
+              message: `invalid binding TUNNEL_SECRET=${TUNNEL_SECRET} AUTHZ_TOKEN=${AUTHZ_TOKEN}`,
             },
-          },
-          subdomains: {
-            get: async () => ({ subdomain: "sub" }),
-          },
+          ],
         },
-      }) as never;
+        400,
+      );
 
     const warnings: string[] = [];
     let thrown: unknown;
     try {
       await deployWorker(input, {
-        fetchImpl: provisioningFetch(),
-        clientFactory,
+        fetchImpl: fakeCf({ onUpload }),
         maxAttempts: 1,
         sleep: async () => {},
         log: { warn: (m) => warnings.push(m) },

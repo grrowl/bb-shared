@@ -3,18 +3,22 @@
 // The always-temp deploy path from spike 01 (`research/cf-temp-deployments.md`
 // §"Path B"): solve the PoW challenge → provision an anonymous temp account →
 // upload the bundled worker script (with the TunnelDO binding + our two
-// secrets) via the `cloudflare` SDK → resolve the `*.workers.dev` URL.
+// secrets) via a raw multipart PUT → enable the workers.dev route → wait for
+// route propagation → resolve the `*.workers.dev` URL.
 //
 // One code path, always temp (SPEC §"Worker lifecycle": "no wrangler dep, no
 // branching"). Every deploy provisions a FRESH temp account, so the DO
-// migration is always a first-time `new_classes` migration; we never re-key a
+// migration is always a first-time SQLite-backed migration; we never re-key a
 // live account. Redeploy == a fresh provision with a freshly-minted tunnel
 // secret.
 //
-// No CF egress in the sandbox, so this is not integration-tested here; the PoW
-// math (pow.ts) is unit-tested, and the network shape follows the spike's
-// verbatim reference implementation.
-import Cloudflare from "cloudflare";
+// This pipeline was verified end to end against the LIVE Cloudflare API
+// (research/cf-live-verification.md TASK 1). Three of its contracts cannot be
+// caught by offline unit tests because they are live-API behaviours, so they
+// are pinned by comments here and by ticket 30: the free-plan SQLite DO
+// migration (error 10097), the raw multipart upload that the `cloudflare` SDK
+// v7.1.0 `scripts.update` gets wrong (error 10021), and the ~15 s workers.dev
+// route propagation after the per-script subdomain enable.
 import { solveChallenge, type PowChallenge } from "./pow";
 
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
@@ -61,14 +65,16 @@ export interface DeployResult {
 export interface DeployOptions {
   /** Injectable for tests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
-  /** Injectable for tests. Defaults to `(name, token) => new Cloudflare(...)`. */
-  clientFactory?: (apiToken: string) => Pick<Cloudflare, "workers">;
   /** Abortable sleep, injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   /** Total attempts of the whole provision+upload unit. Default 3. */
   maxAttempts?: number;
   /** Base backoff in ms (exponential). Default 1000. */
   backoffBaseMs?: number;
+  /** Max workers.dev route-propagation probes after enabling. Default 10. */
+  propagationProbes?: number;
+  /** Interval between route-propagation probes in ms. Default 3000. */
+  propagationIntervalMs?: number;
   log?: { info?(m: string): void; warn(m: string): void };
 }
 
@@ -122,30 +128,62 @@ function redactErrorMessage(err: unknown): string {
   return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
-async function cfPost<T>(
+interface CfRequestInit {
+  /** Default POST. */
+  method?: string;
+  /** Bearer for temp-account-scoped calls (script upload, subdomain, route). */
+  apiToken?: string;
+  /** JSON body — sets `content-type: application/json`. */
+  json?: unknown;
+  /** Multipart body — fetch sets the `multipart/form-data` boundary itself. */
+  form?: FormData;
+}
+
+/** Pull CF's `{code, message}` error detail off a non-2xx envelope, if any. */
+async function cfErrorDetail(res: Response): Promise<string> {
+  try {
+    const j = (await res.json()) as CfEnvelope<unknown>;
+    const detail = (j.errors ?? [])
+      .map((e) => `${e.code ?? "?"} ${e.message ?? ""}`.trim())
+      .join("; ");
+    return detail ? `: ${detail}` : "";
+  } catch {
+    return "";
+  }
+}
+
+async function cfRequest<T>(
   fetchImpl: typeof fetch,
   path: string,
-  body: unknown,
+  init: CfRequestInit = {},
 ): Promise<T> {
+  const method = init.method ?? "POST";
+  const headers: Record<string, string> = {};
+  if (init.apiToken) headers.authorization = `Bearer ${init.apiToken}`;
+  let body: BodyInit | undefined;
+  if (init.form) {
+    body = init.form;
+  } else if (init.json !== undefined) {
+    headers["content-type"] = "application/json";
+    body = JSON.stringify(init.json ?? {});
+  }
+
   let res: Response;
   try {
-    res = await fetchImpl(`${CF_API_BASE}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body ?? {}),
-    });
+    res = await fetchImpl(`${CF_API_BASE}${path}`, { method, headers, body });
   } catch (err) {
     // Network-layer failure — retriable.
     throw new CfDeployError(
-      `CF POST ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
+      `CF ${method} ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
       true,
     );
   }
   if (!res.ok) {
-    // 5xx / 429 are worth retrying; 4xx (bad PoW, bad ToS) are not.
+    // 5xx / 429 are worth retrying; 4xx (bad PoW, bad ToS, 10021/10097) are not.
+    // Surface CF's error code so a live-only failure is diagnosable from the log.
     const retriable = res.status >= 500 || res.status === 429;
     throw new CfDeployError(
-      `CF POST ${path} → HTTP ${res.status}`,
+      `CF ${method} ${path} → HTTP ${res.status}${await cfErrorDetail(res)}`,
       retriable,
     );
   }
@@ -154,7 +192,7 @@ async function cfPost<T>(
     const detail = (json.errors ?? [])
       .map((e) => e.message ?? e.code ?? "?")
       .join("; ");
-    throw new CfDeployError(`CF POST ${path} unsuccessful: ${detail}`, false);
+    throw new CfDeployError(`CF ${method} ${path} unsuccessful: ${detail}`, false);
   }
   return json.result;
 }
@@ -178,90 +216,148 @@ interface ProvisionedAccount {
 async function provisionAccount(
   fetchImpl: typeof fetch,
 ): Promise<ProvisionedAccount> {
-  const challenge = await cfPost<PowChallenge>(
+  const challenge = await cfRequest<PowChallenge>(
     fetchImpl,
     "/provisioning/previews/challenge",
-    {},
+    { json: {} },
   );
   const solved = solveChallenge(challenge);
-  return cfPost<ProvisionedAccount>(fetchImpl, "/provisioning/previews", {
-    termsOfService: CF_TERMS,
-    privacyPolicy: CF_PRIVACY,
-    acceptTermsOfService: "yes",
-    challengeToken: solved.challengeToken,
-    solution: solved.solution,
+  return cfRequest<ProvisionedAccount>(fetchImpl, "/provisioning/previews", {
+    json: {
+      termsOfService: CF_TERMS,
+      privacyPolicy: CF_PRIVACY,
+      acceptTermsOfService: "yes",
+      challengeToken: solved.challengeToken,
+      solution: solved.solution,
+    },
   });
 }
 
 // ---------------------------------------------------------------------------
-// Upload: cloudflare SDK scripts.update + subdomains.get.
+// Upload: raw multipart PUT + subdomain read + per-script route enable.
+//
+// The `cloudflare` SDK v7.1.0 `scripts.update` mis-transmits the module body
+// (CF rejects it with error 10021, a bogus syntax error at worker.js:1:4) —
+// proven live in research/cf-live-verification.md TASK 1 bug 3, against BOTH the
+// SDK's `new File()` and `toFile()` paths. So we build the multipart PUT
+// directly, exactly as wrangler does: a JSON `metadata` part + a `worker.js`
+// module part (`application/javascript+module`). No offline test can catch the
+// SDK mismatch; ticket 30 carries it.
 // ---------------------------------------------------------------------------
 
 async function uploadScript(
   input: DeployInput,
   provisioned: ProvisionedAccount,
-  clientFactory: NonNullable<DeployOptions["clientFactory"]>,
+  fetchImpl: typeof fetch,
 ): Promise<{ url: string; deploymentId: string }> {
   const accountId = provisioned.account.id;
-  const client = clientFactory(provisioned.account.apiToken);
+  const apiToken = provisioned.account.apiToken;
+  const scriptPath = `/accounts/${accountId}/workers/scripts/${input.scriptName}`;
 
-  const workerModule = new File([input.scriptContent], "worker.js", {
-    type: "application/javascript+module",
-  });
-
-  // The request body carries the raw `secret_text` values. Wrap the SDK call so
-  // any error it throws (which some HTTP SDKs render by echoing the request
-  // body/params) is scrubbed of secrets before it can propagate to a log sink
-  // (M3, ticket 20). The re-thrown error carries only a redacted message.
-  let updated: Awaited<ReturnType<typeof client.workers.scripts.update>>;
-  try {
-    updated = await client.workers.scripts.update(input.scriptName, {
-      account_id: accountId,
-      metadata: {
-        main_module: "worker.js",
-        compatibility_date: input.compatibilityDate,
-        bindings: [
-          {
-            type: "durable_object_namespace",
-            name: input.doBindingName,
-            class_name: input.doClassName,
-          },
-          {
-            type: "secret_text",
-            name: WORKER_ENV.tunnelSecret,
-            text: input.tunnelSecret,
-          },
-          {
-            type: "secret_text",
-            name: WORKER_ENV.authzToken,
-            text: input.authzToken,
-          },
-        ],
-        // Always a first-time migration: every deploy is a fresh temp account.
-        migrations: {
-          new_tag: input.migrationTag,
-          new_classes: [input.doClassName],
-        },
+  const metadata = {
+    main_module: "worker.js",
+    compatibility_date: input.compatibilityDate,
+    bindings: [
+      {
+        type: "durable_object_namespace",
+        name: input.doBindingName,
+        class_name: input.doClassName,
       },
-      files: [workerModule],
+      { type: "secret_text", name: WORKER_ENV.tunnelSecret, text: input.tunnelSecret },
+      { type: "secret_text", name: WORKER_ENV.authzToken, text: input.authzToken },
+    ],
+    // Always a first-time migration: every deploy is a fresh temp account. Temp
+    // accounts are free-plan, where DOs MUST be SQLite-backed — a legacy
+    // `new_classes` migration is rejected with error 10097 (research bug 2).
+    migrations: {
+      new_tag: input.migrationTag,
+      new_sqlite_classes: [input.doClassName],
+    },
+  };
+
+  const form = new FormData();
+  form.set("metadata", JSON.stringify(metadata));
+  form.set(
+    "worker.js",
+    new Blob([input.scriptContent], { type: "application/javascript+module" }),
+    "worker.js",
+  );
+
+  // The multipart body carries the raw `secret_text` values. Wrap the upload so
+  // any error (network layer, or a CF envelope that echoed the request) is
+  // scrubbed of secrets before it can propagate to a log sink (M3, ticket 20).
+  let deploymentId: string;
+  try {
+    const updated = await cfRequest<{ id?: string }>(fetchImpl, scriptPath, {
+      method: "PUT",
+      apiToken,
+      form,
     });
+    deploymentId = updated.id ?? input.scriptName;
   } catch (err) {
-    // Non-network SDK errors (4xx validation, etc.) are not retriable; either
-    // way the message is redacted so no secret survives into the caller's log.
     throw new CfDeployError(
-      `CF scripts.update failed: ${redactErrorMessage(err)}`,
-      false,
+      `CF script upload failed: ${redactErrorMessage(err)}`,
+      err instanceof CfDeployError ? err.retriable : false,
     );
   }
 
-  const { subdomain } = await client.workers.subdomains.get({
-    account_id: accountId,
+  const { subdomain } = await cfRequest<{ subdomain: string }>(
+    fetchImpl,
+    `/accounts/${accountId}/workers/subdomain`,
+    { method: "GET", apiToken },
+  );
+
+  // Enable the workers.dev route for THIS script. Uploading a script does not
+  // put it on `<script>.<sub>.workers.dev`; without this POST the URL 404s
+  // indefinitely (research bug 4). wrangler issues the same call when
+  // `workers_dev = true`.
+  await cfRequest(fetchImpl, `${scriptPath}/subdomain`, {
+    method: "POST",
+    apiToken,
+    json: { enabled: true, previews_enabled: false },
   });
 
   return {
     url: `https://${input.scriptName}.${subdomain}.workers.dev`,
-    deploymentId: updated.id ?? input.scriptName,
+    deploymentId,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Route propagation (research bug 4).
+//
+// Enabling the per-script workers.dev route is not instant — CF needs ~12-15 s
+// to propagate it, during which the URL returns CF's generic 404 page. Probe
+// the URL until it actually serves the worker (any non-404 status: the worker's
+// own `GET /` gate answers 401 `token_missing`, which is the "it's live" signal)
+// so `deployWorker` doesn't hand back a URL that 404s for the first ~15 s. This
+// is a live-API timing contract with no offline analogue; bounded, and if it
+// never comes up we return anyway and the health loop handles a dead worker.
+// ---------------------------------------------------------------------------
+
+async function waitForRoutePropagation(
+  fetchImpl: typeof fetch,
+  url: string,
+  sleep: (ms: number) => Promise<void>,
+  probes: number,
+  intervalMs: number,
+  log?: DeployOptions["log"],
+): Promise<void> {
+  for (let attempt = 1; attempt <= probes; attempt++) {
+    try {
+      const res = await fetchImpl(url, { method: "GET", redirect: "manual" });
+      // A non-404, sub-500 status means the worker script is serving on the
+      // route. 404 is CF's not-yet-propagated page; 5xx is a transient hiccup.
+      if (res.status !== 404 && res.status < 500) return;
+    } catch {
+      // Network error mid-propagation — keep waiting.
+    }
+    if (attempt < probes) await sleep(intervalMs);
+  }
+  log?.warn(
+    `workers.dev route did not propagate within ${(probes * intervalMs) / 1000}s; ` +
+      "returning URL anyway (health loop will retry if it stays dead)",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -291,11 +387,11 @@ export async function deployWorker(
   opts: DeployOptions = {},
 ): Promise<DeployResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const clientFactory =
-    opts.clientFactory ?? ((apiToken: string) => new Cloudflare({ apiToken }));
   const sleep = opts.sleep ?? defaultSleep;
   const maxAttempts = opts.maxAttempts ?? 3;
   const backoffBaseMs = opts.backoffBaseMs ?? 1000;
+  const propagationProbes = opts.propagationProbes ?? 10;
+  const propagationIntervalMs = opts.propagationIntervalMs ?? 3000;
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -304,7 +400,15 @@ export async function deployWorker(
       const { url, deploymentId } = await uploadScript(
         input,
         provisioned,
-        clientFactory,
+        fetchImpl,
+      );
+      await waitForRoutePropagation(
+        fetchImpl,
+        url,
+        sleep,
+        propagationProbes,
+        propagationIntervalMs,
+        opts.log,
       );
       return {
         url,

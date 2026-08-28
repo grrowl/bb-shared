@@ -18,7 +18,11 @@ name = "TUNNEL_DO"
 class_name = "TunnelDO"
 
 # First-time class migration. Required at initial upload so the temp-account
-# deploy pipeline knows about TunnelDO before the script arrives.
+# deploy pipeline knows about TunnelDO before the script arrives. Temp accounts
+# are on CF's free plan, where Durable Objects MUST use a SQLite-backed
+# migration — a legacy `new_classes` migration is rejected with error 10097
+# (verified live: research/cf-live-verification.md TASK 1 bug 2). TunnelDO uses
+# only the WebSocket hibernation API, which SQLite-backed DOs fully support.
 [[migrations]]
 tag = "v1"
-new_classes = ["TunnelDO"]
+new_sqlite_classes = ["TunnelDO"]

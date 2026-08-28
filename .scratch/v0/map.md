@@ -68,16 +68,14 @@ Parent: [SPEC.md](../../SPEC.md)
 
 Rounds 1–6 done. Resolved: 01–06, 08–12, 14–17, 18, 19.
 
-**Two v0 blockers surfaced during round 6 — both must land before a
-real first-run works securely:**
+**v0 blocker fix status:**
 
-- **22** — plugin id mismatch (flagged by 17). bb mounts as `shared`
-  but code writes `bb-shared` in URL paths. Deny-closed 403 on every
-  guest request. Small find-and-replace fix.
-- **20** — HIGH+MEDIUM security findings from tunnel-secret adversarial
-  review. `claim.url` reachable to guests via realtime + RPC; RPC path
-  guest-reachability unproven; CF SDK error path can leak secrets;
-  deploy-race in tick() bypasses dedupe.
+- **22** ✓ — plugin id mismatch fixed (`shared` everywhere in URL
+  paths); 0 grep hits for `/plugins/bb-shared/` remain in code/docs.
+- **20** (in flight) — HIGH+MEDIUM security findings from tunnel-secret
+  adversarial review. `claim.url` reachable to guests via realtime +
+  RPC; RPC path guest-reachability unproven; CF SDK error path can
+  leak secrets; deploy-race in tick() bypasses dedupe.
 
 Then:
 

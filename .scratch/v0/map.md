@@ -66,22 +66,34 @@ Parent: [SPEC.md](../../SPEC.md)
 
 ## Frontier
 
-Rounds 1–5 done. Resolved: 01–06, 08–12, 14–16, 18, 19.
-Round 6 in flight: 17.
+Rounds 1–6 done. Resolved: 01–06, 08–12, 14–17, 18, 19.
 
-Adversarial review of tunnel-secret design **complete** — see
-`research/tunnel-secret-review.md`. Verdict: **CONDITIONAL SHIP**.
-Findings translated into two tickets:
+**Two v0 blockers surfaced during round 6 — both must land before a
+real first-run works securely:**
 
-- **20** — fix HIGH + MEDIUM findings (SHIP BLOCKER): claim.url
-  reachable to guests via realtime + RPC; RPC path unproven guest-
-  unreachable; CF SDK error path can leak secrets; deploy-race in
-  tick() bypasses dedupe.
-- **21** — LOW findings + accepted residuals (polish): doc contradictions,
-  health-check sharpening, TLS pinning residual, KV plaintext trust-model
-  documentation.
+- **22** — plugin id mismatch (flagged by 17). bb mounts as `shared`
+  but code writes `bb-shared` in URL paths. Deny-closed 403 on every
+  guest request. Small find-and-replace fix.
+- **20** — HIGH+MEDIUM security findings from tunnel-secret adversarial
+  review. `claim.url` reachable to guests via realtime + RPC; RPC path
+  guest-reachability unproven; CF SDK error path can leak secrets;
+  deploy-race in tick() bypasses dedupe.
 
-Post-17, the frontier is: **20 (blocker), then 21.**
+Then:
+
+- **21** — LOW security findings + accepted residuals (polish): doc
+  contradictions, health-check sharpening, TLS pinning residual, KV
+  plaintext trust-model documentation.
+
+Adversarial review report: `research/tunnel-secret-review.md`. Verdict
+CONDITIONAL SHIP — conditions are 20+21.
+
+E2E runbook: `docs/e2e-runbook.md` (17 ✓). Also flagged three known
+v0 limitations not blocking ship: guest sidebar doesn't live-update
+(WS scope fixed at upgrade, useRealtime is owner-side), revocation is
+pull-based (no proactive socket teardown), lazy deploy fires on
+`mintToken` only (not `openShareDialog`). All documented in the
+runbook.
 
 Separately, whenever you want:
 

@@ -66,14 +66,16 @@ Parent: [SPEC.md](../../SPEC.md)
 
 ## Frontier
 
-Rounds 1, 2, 3, 4 done. Round 5 in flight (18 ✓, 19).
-Resolved: 01–06, 08–12, 14–16, 18.
+Rounds 1–5 done. Resolved: 01–06, 08–12, 14–16, 18, 19.
 
-Currently unblocked: **17, 19.**
+Currently unblocked: **17** — the last v0 ticket.
 
-Round 6 (after 19 lands):
+Round 6:
 
 - **17** e2e smoke — manual runbook walking the whole flow.
+
+Separately in flight: adversarial review of the tunnel-secret design
+(findings will land in `research/tunnel-secret-review.md`).
 
 Separately, whenever you want:
 

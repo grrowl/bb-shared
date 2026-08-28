@@ -63,14 +63,37 @@ curl -sS -X POST http://127.0.0.1:38886/api/v1/plugins/shared/rpc/listTokens \
 If the plugin loaded and RPC is registered, that "not implemented" reply is
 the success signal for issue 04.
 
+## Cloudflare OAuth (issue 28)
+
+Once a worker is deployed, the owner can connect their real Cloudflare account
+by OAuth so a **claimed** worker is reused across restarts and managed from the
+API (redeploy/undeploy). OAuth is the source of truth for claim state and the
+worker's live hostname. See `cf-oauth/` and `../.scratch/v0/issues/28-*.md`.
+
+**One-time setup — the `client_id` is a plugin setting, not hardcoded.**
+
+1. Register a **public PKCE OAuth client** once (see the exact `curl` in
+   ticket 28). It returns a `client_id` and no secret.
+2. Paste it into the plugin setting **"Cloudflare OAuth client id"**
+   (`cfOauthClientId`), then `bb plugin reload shared`.
+3. The **"Cloudflare OAuth callback port"** setting (`cfOauthCallbackPort`,
+   default `8977`) MUST match the port in the client's registered
+   `redirect_uris` — Cloudflare matches redirect URIs exactly, so the loopback
+   port is fixed, not flexible. The owner's browser must run on the same machine
+   as the bb server.
+
+Until a `client_id` is configured, "Connect Cloudflare" returns a clear
+"not configured" error and the unclaimed temp-worker flow is unaffected.
+
 ## Notes for downstream issues
 
 - **RPC method names**: camelCase (matches the ticket). The bb host only
   requires `/^[a-zA-Z0-9_-]+$/` — automations uses `_`, tasks uses `_`, this
   plugin uses camelCase; pick one and stick with it.
-- **Realtime channels**: `REALTIME_CHANNELS` in `server.ts` names the two
-  channels the frontend subscribes to (`tokens-changed`, `worker-changed`).
-  Publish from wherever the mutation happens.
+- **Realtime channels**: `REALTIME_CHANNELS` in `lib/realtime-channels.ts`
+  names the channels the frontend subscribes to (`tokens-changed`,
+  `worker-changed`, `connection-changed`). Publish from wherever the mutation
+  happens.
 - **In-memory state**: SPEC.md §"Data model" is explicit — no SQLite in v0.
   Use a plain `Map<string, Token>` in the factory closure; state dies on
   reload, which is fine for v0.

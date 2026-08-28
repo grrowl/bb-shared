@@ -83,7 +83,8 @@ WS passthrough both round-trip through a stub bb behind the local
 `SharedTunnel`). Owner-side (plugin RPC, `/authz`, owner UI, worker deploy) was
 already functional. Guest transport is the last missing link and is now in.
 
-Resolved: 01–12, 14–27, 30. Guest half of the e2e runbook is now runnable.
+Resolved: 01–12, 14–30 (28 pending live validation). Guest half of the e2e
+runbook is now runnable.
 
 - E2E runbook at `docs/e2e-runbook.md` (guest half unblocked by 27; not yet
   walked against a real bb — transport proven live via stub-bb e2e).
@@ -187,10 +188,21 @@ Captured from ticket answers during v0 delivery:
 - **Best-effort delete of prior-gen CF account on redeploy** — L4
   residual. Currently the prior worker returns 5xx until CF reclaims
   the unclaimed account (≤60 min).
-- **OAuth-based claim flow** — captures the claimed CF account and
-  keeps managing under it, replacing the fire-and-forget claim.url
-  nudge with a real state machine (spike 01 called this out; SPEC
-  positions it as v2).
+- **OAuth-based claim flow** — **RESOLVED (28, pending live validation).**
+  Cloudflare OAuth (Authorization Code + PKCE, S256) is now the source of truth
+  for claim state and worker identity. New `plugin/cf-oauth/` subsystem: PKCE +
+  authorize URL, token client (auth-code/refresh/revoke, rotation, no secret),
+  discovery (list accounts → find `bb-shared-worker` → read live subdomain →
+  resolve live hostname, 2-account disambiguation by tunnel-secret handshake),
+  loopback callback listener, and the §11.5 encrypted record (`cfRefreshToken` +
+  `tunnelSecret` + metadata; no access token / claim.url on disk). Lifecycle:
+  restart adoption re-attaches at the live host with no redeploy;
+  deleted-in-dashboard → wipe + fresh bootstrap; redeploy/undeploy via the
+  access token. Owner UX: Connect / connected (account + hostname) / disconnect.
+  `client_id` is a plugin setting (not hardcoded). Plugin suite 161 (+45) green,
+  worker 187 green, tsc clean. Remaining: register the public client, paste the
+  `client_id`, and walk the live login (see ticket 28 for the exact curl + port
+  note). Unclaimed temp-worker flow unchanged.
 
 ## Follow-ups / drift captured during rounds 2-4
 

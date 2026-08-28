@@ -1,4 +1,4 @@
-Status: open
+Status: RESOLVED (pending live validation — needs a registered client_id + owner login)
 Type: task
 Severity: high (unblocks claimed-worker reuse)
 Blocked by:
@@ -233,5 +233,131 @@ written; where it conflicts, THESE values win.
 Still OPEN (the one part of caveat #1 not closed): the absolute refresh-token
 LIFETIME (TTL) is undocumented and not hardcoded in wrangler; rotation-with-grace
 is confirmed, the TTL is not.
+
+## RESOLVED — implementation (2026-08-28)
+
+Cloudflare OAuth is built and is now the source of truth for claim state and
+worker identity, per the §§9-14 design and the corrected constants above. Full
+plugin + worker suites are green and tsc is clean.
+
+### What shipped
+
+- **New subsystem `plugin/cf-oauth/`** (all network + browser behind injectable
+  seams; no live client needed to test):
+  - `pkce.ts` — Authorization Code + PKCE, **S256 only**; `generatePkce`,
+    `generateState`, `buildAuthorizeUrl`.
+  - `oauth-constants.ts` — the three VERIFIED endpoints hardcoded
+    (`/oauth2/auth`, `/oauth2/token`, `/oauth2/revoke`), real `resource:action`
+    scopes (`account:read`, `workers:read` required; `workers_scripts:write`
+    optional), fixed loopback redirect `http://127.0.0.1:<port>/oauth/callback`.
+  - `oauth-client.ts` — auth-code / refresh / revoke against the token endpoint,
+    **no client_secret** (`token_endpoint_auth_method: "none"`), refresh-token
+    **rotation** handled (`applyRefreshRotation`, RFC 6749 §6), `invalidGrant`
+    surfaced so a revoked token degrades to not-connected.
+  - `cf-api.ts` — discovery: list accounts → find `bb-shared-worker` → read the
+    account subdomain → resolve the **LIVE** hostname; two-account
+    disambiguation by tunnel-secret handshake; redeploy (reuses the ticket-30
+    upload path) + undeploy (`DELETE …?force=true`).
+  - `tunnel-probe.ts` — the real `ws` `/__tunnel` handshake probe (101 accept /
+    401 reject) for disambiguation.
+  - `loopback-server.ts` — the fixed-port `/oauth/callback` listener with a
+    `state` (CSRF) check, error/timeout/abort handling.
+  - `connect-flow.ts` — two-phase `beginConnect()` → `{ authorizeUrl, complete }`.
+  - `oauth-record.ts` — the §11.5 persisted record, encrypted at rest via
+    issue 29 (secret fields `cfRefreshToken`, `tunnelSecret`); access token and
+    `claim.url` never persisted.
+- **`WorkerLifecycle` integration** (optional OAuth deps; the unclaimed
+  temp-worker flow is byte-for-byte unchanged): restart adoption (§12A) — on
+  start, an OAuth record is refreshed → discovered live → the tunnel re-attaches
+  at the live host with no redeploy; deleted-in-dashboard → wipe + fresh
+  bootstrap; revoked refresh → drop to not-connected. Connect →
+  discover → persist → adopt (§11.2-11.5). Redeploy/undeploy via the access
+  token. New RPCs in `server.ts`: `connectCloudflare`, `disconnectCloudflare`,
+  `getConnectionStatus`, `redeployClaimedWorker`, `undeployClaimedWorker`, on a
+  new `connection-changed` realtime channel.
+- **Owner UX** (`nav-panel/tokens-panel.tsx`): a "Connect Cloudflare" action
+  shown once a worker exists (pairs with the claim nudge), a connected state
+  showing the account + live hostname, and disconnect (revoke + forget).
+- **Config**: the `client_id` is a plugin setting, **not hardcoded** —
+  `cfOauthClientId` (and `cfOauthCallbackPort`, default `8977`) defined via
+  `bb.settings.define` in `server.ts`.
+
+### Tests (all green)
+
+Plugin suite 161 passed + 1 skipped (was 116), worker suite 187 passed; tsc
+clean in both. New coverage: PKCE param construction; token
+exchange/refresh/rotation + `invalidGrant` (mock fetch); discovery resolution +
+2-account disambiguation + fail-closed; loopback callback + `state` mismatch +
+connect flow; §11.5 persistence shape (encrypted secrets, **no access token, no
+claim.url, nothing beyond the §11.5 set on disk**); restart adoption paths
+(§12A live-hostname re-resolution, deleted-in-dashboard, revoked refresh,
+rotation persisted); connect→persist→adopt; disconnect; redeploy/undeploy +
+write-scope gate.
+
+### Remaining owner steps for live validation (the one-time setup)
+
+1. **Register the public OAuth client ONCE** (curl below) against a Cloudflare
+   account, using a CF API token that can create OAuth clients. A public/PKCE
+   client receives a `client_id` and **no** `client_secret`.
+2. **Paste the returned `client_id`** into the plugin setting **"Cloudflare
+   OAuth client id"** (`cfOauthClientId`) and reload the plugin
+   (`bb plugin reload shared` — settings changes need a reload).
+3. **Keep the callback port fixed.** The default is `8977`
+   (`cfOauthCallbackPort`); the registered `redirect_uris` must byte-match the
+   port. See the port note below.
+4. Walk the flow: create a share (deploys a temp worker) → click **Connect
+   Cloudflare** → consent in the browser (choose the account, grant write if you
+   want redeploy/undeploy) → after the callback the panel shows **Cloudflare
+   connected** with the account + live hostname.
+
+### One-time client registration (VERIFIED shape, spike TASK 2)
+
+```
+curl -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/oauth_clients" \
+  -H "Authorization: Bearer {CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "bb-shared",
+    "grant_types": ["authorization_code"],
+    "response_types": ["code"],
+    "token_endpoint_auth_method": "none",
+    "redirect_uris": ["http://127.0.0.1:8977/oauth/callback"],
+    "scopes": ["account:read", "workers:read"],
+    "optional_scopes": ["workers_scripts:write"]
+  }'
+```
+
+- `token_endpoint_auth_method: "none"` makes it a **public PKCE client** — no
+  secret is issued, so nothing secret ships in the plugin. Setting a client
+  public is permanent.
+- `optional_scopes` lets a cautious owner grant read-only and decline write;
+  `offline_access` is appended by CF automatically to mint the refresh token —
+  do NOT list it.
+- The response's `result.client_id` is the value for the `cfOauthClientId`
+  setting. There is no `client_secret`.
+
+**Port fixity — the port must be FIXED, loopback ports are NOT flexible.**
+Cloudflare's OAuth server (Ory Hydra) matches `redirect_uris` **exactly**;
+there is no loopback-port wildcarding. This is why wrangler hardcodes
+`http://localhost:8976/oauth/callback` (spike TASK 2,
+`packages/workers-auth/src/wrangler/constants.ts:23`). The plugin listens on the
+`cfOauthCallbackPort` setting (default `8977`) and MUST register that exact
+`http://127.0.0.1:<port>/oauth/callback`. If you change the port setting, change
+the registered `redirect_uris` to match. The owner's browser must be on the same
+machine as the bb server (standard native-app loopback assumption).
+
+### Live-validation caveats carried forward
+
+- **Refresh-token LIFETIME** is still undocumented (rotation-with-grace is
+  confirmed). If a refresh 401s as `invalid_grant`, the plugin degrades to
+  not-connected and re-prompts Connect — verify this path live once.
+- **Redeploy migration tag**: the reused upload path sends a first-time
+  `new_sqlite_classes` DO migration. Re-uploading onto a claimed script whose DO
+  class already exists may need a bare/no-migration upload or a `new_tag` bump;
+  cannot be exercised offline (`cf-deploy.ts` `uploadWorkerScript` flags it).
+- **Hostname-on-claim two-account empirical test** (§10.3) still not run;
+  OAuth makes correctness independent of it (the live hostname is read every
+  start), but it is the last doc gap.
 
 ## Comments

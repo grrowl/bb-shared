@@ -20,4 +20,12 @@ between "what we mint" and "what we accept".
 
 ## Comments
 
+Deferred (2026-08-28). The fix (tighten `TOKEN_RE` to `{43,64}` in
+`worker/src/token.ts`) is one line, but the worker test fixtures use 32-char and
+40-char tokens as valid across `token.test.ts`, `response-filters.test.ts`,
+`ws-frame-filter.test.ts`, and `authz.test.ts`, so tightening the floor churns
+those fixtures. Not worth the change/risk for a non-exploitable LOW while other
+work is in flight. Left open; do it with the next worker-test pass and bump the
+fixtures to 43 chars.
+
 ## Answer

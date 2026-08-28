@@ -99,9 +99,12 @@ now `/authz`. Not yet committed.
   denies out-of-scope projects and gates project-nested thread paths as
   threads; the worker response filter to shape an in-scope project body
   (strip `sources`, scope `threads`) still remains.
-- **25 — response-filter trailing-slash bypass (MEDIUM).** Exact-match filters
-  vs prefix-allow authz; `/api/v1/plugins/` leaks the real inventory.
-- **26 — token length floor (LOW).** Regex accepts 24-byte tokens; mint is 32.
+- **25 — response-filter trailing-slash bypass (MEDIUM). RESOLVED.**
+  `matchResponseFilter` now strips the trailing slash before matching, so
+  `/api/v1/plugins/` hits the empty filter instead of leaking the inventory.
+- **26 — token length floor (LOW). DEFERRED.** One-line regex fix, but it
+  churns 32/40-char worker test fixtures; not worth it for a non-exploitable
+  LOW right now.
 - **27 — CF-side tunnel proxy (HIGH / ship-blocker).** `proxyGuestRequest` is a
   503 stub; guest transport unimplemented. Research pending on
   CF-native vs hand-rolled before implementation.

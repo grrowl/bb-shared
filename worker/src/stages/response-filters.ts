@@ -169,9 +169,17 @@ type FilterMatch =
  */
 export function matchResponseFilter(
   method: string,
-  pathname: string,
+  rawPathname: string,
 ): FilterMatch | null {
   if (method !== "GET") return null;
+
+  // Normalize a trailing slash away before matching. The plugin's /authz
+  // normalizes trailing slashes (authz.ts `normalizePath`), so it ALLOWS
+  // `/api/v1/plugins/`; if this exact-match matcher did not do the same, that
+  // request would miss the filter and leak the real plugin/host inventory
+  // (issue 25). Keep the two surfaces defined by the same normalization.
+  const pathname =
+    rawPathname.length > 1 ? rawPathname.replace(/\/+$/, "") : rawPathname;
 
   switch (pathname) {
     case SYSTEM_CONFIG_PATH:

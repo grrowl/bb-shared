@@ -1,4 +1,4 @@
-Status: open
+Status: resolved
 Type: bug
 Severity: medium
 Blocked by:
@@ -29,3 +29,14 @@ every filtered endpoint.
 ## Comments
 
 ## Answer
+
+Fixed in `worker/src/stages/response-filters.ts`. `matchResponseFilter` now
+strips a trailing slash from the pathname before its exact-match switch, the
+same normalization the plugin's `/authz` `normalizePath` does. So
+`/api/v1/plugins/` and `/api/v1/hosts/` (which authz allows) now hit the
+constant `[]` filters instead of falling through to dispatch and leaking the
+real inventory. Test added in `tests/response-filters.test.ts`. Full worker
+suite 163/163 green, tsc clean.
+
+Note: sub-paths like `/api/v1/plugins/x/assets/a` still correctly return null
+(only a trailing slash is stripped, not a real subpath).

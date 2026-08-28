@@ -306,6 +306,18 @@ describe("matchResponseFilter", () => {
     ).toBe("constant");
   });
 
+  it("matches a trailing-slash variant, closing the authz prefix gap (issue 25)", () => {
+    // /authz allows `/api/v1/plugins/` (it normalizes the trailing slash), so
+    // the filter must catch it too or the real inventory leaks.
+    expect(matchResponseFilter("GET", "/api/v1/plugins/")?.kind).toBe(
+      "constant",
+    );
+    expect(matchResponseFilter("GET", "/api/v1/hosts/")?.kind).toBe("constant");
+    expect(matchResponseFilter("GET", "/api/v1/system/config/")?.kind).toBe(
+      "reshape",
+    );
+  });
+
   it("does not match writes (left to the mutation gate)", () => {
     expect(matchResponseFilter("POST", "/api/v1/system/config")).toBeNull();
     expect(matchResponseFilter("PUT", "/api/v1/plugin-settings/x")).toBeNull();

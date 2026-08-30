@@ -1,9 +1,13 @@
-# 31 — Guest transport broken against a real bb (chain of fixes) — RESOLVED pending live validation
+# 31 — Guest transport broken against a real bb (chain of fixes) — RESOLVED (browser-verified)
 
-Status: fixes committed; needs one clean end-to-end guest load with a freshly
-minted link to close. Found while installing to test (2026-08-30). Ticket 27's
-e2e used a STUB bb that did not enforce plugin-token auth or serve the real SPA,
-so none of the below surfaced until a real-bb walk.
+Status: RESOLVED. Verified end to end in a real browser (agent-browser) against
+a live deployed worker on 2026-08-30 — the guest deep link opens straight to the
+shared thread, history renders, models load, the composer works for a write
+share, the sidebar is scoped to the one shared thread, and new messages stream
+in live over /ws. Found while installing to test. Ticket 27's e2e used a STUB bb
+that did not enforce plugin-token auth or serve the real SPA, so none of the
+below surfaced until a real-bb walk. Remaining: surface-6 read-guest composer
+UX (below), and folding this into an automated real-bb e2e.
 
 ## Root cause (the blocker)
 
@@ -66,25 +70,31 @@ Minor, left denied (non-blocking): `POST /threads/resolve-mentions` (mention
 autocomplete), `GET /environments/{id}/status|pull-request` (env status in the
 thread header). Revisit if the guest UI needs them.
 
-## Outstanding — the live validation gap
+## Live walk #2 (2026-08-30, browser) — deep-link fix; fully verified
 
-The transport chain is now verified by curl (above). What remains is a VISUAL
-browser confirmation — that the SPA renders, the model picker populates, and a
-new message streams in live — plus the read-guest composer UX.
+Drove agent-browser (`npx agent-browser`) against a live deployed worker. First
+load showed the SPA falling back to `/` (empty new-thread view) with a "could
+not load the project's execution defaults" error, because the set-cookie 302
+redirected to `/{token}/<path>` — bb's client router doesn't know the `/{token}`
+prefix. Since the cookie already carries the token, `buildCleanRedirectPath` now
+drops it and redirects to the clean bb path (commit 332ef8e). Re-tested on a
+fresh worker: the deep link opens straight to the thread (landed URL is the
+clean `/projects/{p}/threads/{t}`), history renders, the model picker populates
+("Opus 4.8 1M High"), the composer is present (write share), the sidebar shows
+only the shared thread, and the guest view mirrored the owner's live activity in
+real time — proving `/ws` live updates end to end.
 
-1. Load the guest link in a real browser; confirm render + models + a live
-   message appearing without reload. (Could not automate this run: the
-   computer-use/orca binary was uninstalled, so no browser driver was
-   available.)
-2. Surface-6 UX: hide the composer for a read-only guest (the share perm is in
+## Outstanding
+
+1. Surface-6 UX: hide the composer for a read-only guest (the share perm is in
    the token; the shim can carry it) so a read guest never types into a
    dead-end "scope" error.
-3. Walk `docs/e2e-runbook.md`'s guest half for real and record it.
+2. Fold this walk into an automated real-bb e2e so the class of bug can't hide.
 
 Runtime note: heavy autonomous curl/WS testing tripped CF edge rate-limiting
-(HTTP 429) on the temp worker's tunnel dial. Transient — clears on CF's window
-or when the temp worker expires and the plugin redeploys a fresh account. Not a
-code issue.
+(HTTP 429) on a temp account. Account-specific — a fresh temp deploy has a clean
+budget. Not a code issue. Also noted: the health check treats a 429 worker as
+"healthy" (429 < 500) and reuses it; consider treating 429/5xx as unhealthy.
 
 ## Follow-up
 

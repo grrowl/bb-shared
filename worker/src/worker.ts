@@ -68,6 +68,7 @@ export default {
       workerPublicOrigin: url.origin,
       token: null,
       scope: null,
+      perms: null,
     };
 
     return runPipeline(

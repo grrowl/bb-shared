@@ -16,7 +16,7 @@
  */
 
 import type { Env } from "./env.js";
-import type { GuestScope } from "./scope.js";
+import type { GuestScope, ThreadPerm } from "./scope.js";
 
 export interface RequestContext {
   /**
@@ -43,6 +43,16 @@ export interface RequestContext {
    * null scope is treated as deny-everything.
    */
   scope: GuestScope | null;
+  /**
+   * The token's per-thread permissions, straight from 06's `/authz` `perms`
+   * (populated by the authz stage alongside `scope`; null before it runs). The
+   * chrome shim (issue 36) reads this to hide the composer on read-only threads.
+   * It covers EVERY thread in the token's shares, not just the requested path,
+   * so the client-side shim can resolve a thread's mode after an SPA route
+   * change without a fresh document. Not a security boundary — the mutation
+   * gate is; a null/unknown perm keeps the composer visible (safe default).
+   */
+  perms: readonly ThreadPerm[] | null;
 }
 
 export type StageResult =

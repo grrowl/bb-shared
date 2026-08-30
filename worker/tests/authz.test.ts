@@ -4,6 +4,7 @@ import {
   denyForPath,
   isApiPath,
   isGuestDeniedRpcPath,
+  permsFromAuthz,
   scopeFromAuthz,
   type AuthzResponse,
 } from "../src/stages/authz.js";
@@ -71,6 +72,7 @@ function makeCtx(
     workerPublicOrigin: ORIGIN,
     token: overrides.token === undefined ? GUEST_TOKEN : overrides.token,
     scope: null,
+    perms: null,
   };
 }
 
@@ -131,6 +133,40 @@ describe("scopeFromAuthz", () => {
   });
 });
 
+describe("permsFromAuthz", () => {
+  it("maps every share's per-thread mode (issue 36)", () => {
+    const perms = permsFromAuthz(
+      allow({
+        perms: [
+          { thread_id: "T1", mode: "read" },
+          { thread_id: "T2", mode: "write" },
+        ],
+      }),
+    );
+    expect(perms).toEqual([
+      { threadId: "T1", mode: "read" },
+      { threadId: "T2", mode: "write" },
+    ]);
+  });
+
+  it("drops an unrecognized mode (safe default: don't hide the composer)", () => {
+    const perms = permsFromAuthz(
+      allow({
+        perms: [
+          { thread_id: "T1", mode: "read" },
+          // A malformed/unknown mode must not be treated as "read".
+          { thread_id: "T2", mode: "admin" as unknown as "read" },
+        ],
+      }),
+    );
+    expect(perms).toEqual([{ threadId: "T1", mode: "read" }]);
+  });
+
+  it("tolerates a missing perms array", () => {
+    expect(permsFromAuthz(allow({ perms: undefined as never }))).toEqual([]);
+  });
+});
+
 describe("isApiPath", () => {
   it("classifies /api/* as API and SPA routes as HTML", () => {
     expect(isApiPath("/api/v1/threads/T1")).toBe(true);
@@ -165,6 +201,8 @@ describe("authzStage", () => {
     expect(cont.ctx.scope?.threadIds.has("T1")).toBe(true);
     // project_scope (issue 19) flows straight into GuestScope.projectIds.
     expect(cont.ctx.scope?.projectIds.has("P1")).toBe(true);
+    // perms (issue 36) flow into ctx.perms for the chrome shim.
+    expect(cont.ctx.perms).toEqual([{ threadId: "T1", mode: "write" }]);
 
     // Sanity: it consulted the plugin's /authz endpoint with the right query
     // and bearer, and forwarded the guest's own path/method.

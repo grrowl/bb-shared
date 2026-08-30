@@ -25,7 +25,7 @@
 
 import { jsonError } from "../errors.js";
 import { cont, respond, type RequestContext, type Stage } from "../pipeline.js";
-import type { GuestScope } from "../scope.js";
+import type { GuestScope, ThreadPerm } from "../scope.js";
 import type { TunnelRouter } from "../tunnel/interface.js";
 
 /** Where 06's authz route lives on the local bb, behind the tunnel. */
@@ -56,6 +56,20 @@ export function scopeFromAuthz(resp: AuthzResponse): GuestScope {
   const threadIds = new Set(resp.thread_scope ?? []);
   const projectIds = new Set(resp.project_scope ?? []);
   return { threadIds, projectIds };
+}
+
+/**
+ * Translate 06's `perms` into the `ThreadPerm[]` the chrome shim (issue 36)
+ * consumes. Entries with a mode other than the two known values are dropped —
+ * an unknown mode must not be treated as "read", or an un-parseable perm could
+ * hide a composer the guest may legitimately use (safe default: keep it shown).
+ */
+export function permsFromAuthz(resp: AuthzResponse): ThreadPerm[] {
+  return (resp.perms ?? []).flatMap((p) =>
+    p.mode === "read" || p.mode === "write"
+      ? [{ threadId: p.thread_id, mode: p.mode }]
+      : [],
+  );
 }
 
 /** bb's REST surface lives under `/api/`; everything else is an SPA route. */
@@ -193,15 +207,17 @@ export function authzStage(router: TunnelRouter): Stage {
         );
       }
 
-      // Populate scope regardless of allow/deny — it costs nothing and keeps a
-      // single code path. On deny we short-circuit before any stage reads it.
+      // Populate scope + perms regardless of allow/deny — it costs nothing and
+      // keeps a single code path. On deny we short-circuit before any stage
+      // reads either.
       const scope = scopeFromAuthz(parsed);
+      const perms = permsFromAuthz(parsed);
 
       if (!parsed.allowed) {
         return respond(denyForPath(ctx.url.pathname, parsed.reason));
       }
 
-      return cont({ ...ctx, scope });
+      return cont({ ...ctx, scope, perms });
     },
   };
 }

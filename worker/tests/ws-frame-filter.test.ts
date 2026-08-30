@@ -322,6 +322,7 @@ function ctxFor(pathname: string, headers: Record<string, string>): RequestConte
     workerPublicOrigin: url.origin,
     token: "bbsh_" + "A".repeat(32),
     scope: SCOPE,
+    perms: null,
   };
 }
 

@@ -22,9 +22,29 @@
 
 import { respond, type Stage, type StageResult } from "../pipeline.js";
 import { buildShimHtml } from "../chrome-selectors.js";
+import type { ThreadPerm } from "../scope.js";
 
-/** The block injected into `<head>`; computed once at module load. */
+/**
+ * The base block injected into `<head>` when the request carries no resolved
+ * perms — computed once at module load, with an empty read-thread set (so it
+ * hides owner chrome but no composer). Perm-bearing requests build a
+ * per-request variant via {@link shimForPerms}.
+ */
 export const SHIM_HTML = buildShimHtml();
+
+/**
+ * Build the shim for a request's perms: the read-only thread ids drive the
+ * client script's composer-hide. `null`/empty perms fall back to {@link
+ * SHIM_HTML} (identical bytes to `buildShimHtml()` with no read threads).
+ */
+export function shimForPerms(perms: readonly ThreadPerm[] | null): string {
+  if (perms === null || perms.length === 0) return SHIM_HTML;
+  const readThreadIds = perms
+    .filter((p) => p.mode === "read")
+    .map((p) => p.threadId);
+  if (readThreadIds.length === 0) return SHIM_HTML;
+  return buildShimHtml(undefined, readThreadIds);
+}
 
 /** True only for `text/html` responses (any charset); JS/CSS/JSON are false. */
 export function isHtmlResponse(response: Response): boolean {
@@ -52,18 +72,18 @@ export function insertShimIntoHtml(html: string, shim: string = SHIM_HTML): stri
   return `${shim}\n${html}`;
 }
 
-function injectViaHtmlRewriter(response: Response): Response {
+function injectViaHtmlRewriter(response: Response, shim: string): Response {
   return new HTMLRewriter()
     .on("head", {
       element(el) {
-        el.append(SHIM_HTML, { html: true });
+        el.append(shim, { html: true });
       },
     })
     .transform(response);
 }
 
-async function injectViaString(response: Response): Promise<Response> {
-  const rewritten = insertShimIntoHtml(await response.text());
+async function injectViaString(response: Response, shim: string): Promise<Response> {
+  const rewritten = insertShimIntoHtml(await response.text(), shim);
   const headers = new Headers(response.headers);
   // Body length changed; let the platform recompute it.
   headers.delete("content-length");
@@ -77,21 +97,26 @@ async function injectViaString(response: Response): Promise<Response> {
 /**
  * Inject the guest chrome shim into an HTML response. Non-HTML responses are
  * returned unchanged. Uses streaming `HTMLRewriter` where available, else an
- * equivalent buffered string rewrite.
+ * equivalent buffered string rewrite. `shim` defaults to the perm-less base
+ * block; the stage passes a per-request block built from `ctx.perms`.
  */
-export async function injectGuestChrome(response: Response): Promise<Response> {
+export async function injectGuestChrome(
+  response: Response,
+  shim: string = SHIM_HTML,
+): Promise<Response> {
   if (!isHtmlResponse(response)) return response;
   if (typeof HTMLRewriter !== "undefined") {
-    return injectViaHtmlRewriter(response);
+    return injectViaHtmlRewriter(response, shim);
   }
-  return injectViaString(response);
+  return injectViaString(response, shim);
 }
 
 /**
- * Wrap the terminal dispatch stage so guest HTML responses get the shim.
- * Non-guest requests (no token — which the pipeline's extract-token stage
- * already rejects upstream, but guarded here too) and non-HTML responses are
- * passed through verbatim.
+ * Wrap the terminal dispatch stage so guest HTML responses get the shim,
+ * built from `ctx.perms` so the composer is hidden on the guest's read-only
+ * threads (issue 36). Non-guest requests (no token — which the pipeline's
+ * extract-token stage already rejects upstream, but guarded here too) and
+ * non-HTML responses are passed through verbatim.
  */
 export function chromeShimStage(inner: Stage): Stage {
   return {
@@ -100,7 +125,9 @@ export function chromeShimStage(inner: Stage): Stage {
       const result = await inner.run(ctx);
       if (result.kind !== "respond") return result;
       if (ctx.token === null) return result;
-      return respond(await injectGuestChrome(result.response));
+      return respond(
+        await injectGuestChrome(result.response, shimForPerms(ctx.perms)),
+      );
     },
   };
 }

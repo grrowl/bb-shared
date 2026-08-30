@@ -10,6 +10,22 @@
  * Kept as a standalone module so `pipeline.ts` (generic infra) and the stages
  * can both reference the type without a dependency cycle.
  */
+
+/** A guest's mode on one thread — the `mode` field of 06's `perms` entries. */
+export type ThreadMode = "read" | "write";
+
+/**
+ * A single per-thread permission, as carried by 06's `/authz` `perms` array.
+ * The chrome shim (issue 36) uses these to decide, per thread, whether to hide
+ * the message composer — a read guest sees the transcript with no message box.
+ * Kept here (not in the authz stage) so `pipeline.ts` can reference the type on
+ * `RequestContext` without importing a stage, mirroring `GuestScope`.
+ */
+export interface ThreadPerm {
+  readonly threadId: string;
+  readonly mode: ThreadMode;
+}
+
 export interface GuestScope {
   /** Thread ids the token covers — `S.thread_scope` in the spike-03 catalog. */
   readonly threadIds: ReadonlySet<string>;

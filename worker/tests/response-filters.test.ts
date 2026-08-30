@@ -412,6 +412,7 @@ function ctxFor(
     workerPublicOrigin: url.origin,
     token: "bbsh_" + "A".repeat(32),
     scope,
+    perms: null,
   };
 }
 

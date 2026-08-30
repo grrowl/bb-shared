@@ -4,13 +4,18 @@ import {
   injectGuestChrome,
   insertShimIntoHtml,
   isHtmlResponse,
+  shimForPerms,
   SHIM_HTML,
 } from "../src/stages/chrome-shim.js";
 import {
+  buildShimHtml,
   CHROME_SELECTORS,
   GUEST_ROOT_ATTR,
+  PERM_ROOT_ATTR,
+  PERM_READ_FLAG,
 } from "../src/chrome-selectors.js";
 import { respond, type RequestContext, type Stage } from "../src/pipeline.js";
+import type { ThreadPerm } from "../src/scope.js";
 
 // These tests run under vitest's node environment, where the Workers-native
 // `HTMLRewriter` global is absent — so `injectGuestChrome` exercises the
@@ -23,9 +28,13 @@ const html = (body: string, init: ResponseInit = {}) =>
     ...init,
   });
 
-// A minimal RequestContext — the chrome-shim stage only reads `ctx.token`.
-const ctxWith = (token: string | null): RequestContext =>
-  ({ token }) as unknown as RequestContext;
+// A minimal RequestContext — the chrome-shim stage reads `ctx.token` and
+// `ctx.perms`. Perms default to null (base shim, no composer hide).
+const ctxWith = (
+  token: string | null,
+  perms: readonly ThreadPerm[] | null = null,
+): RequestContext =>
+  ({ token, perms }) as unknown as RequestContext;
 
 const staticStage = (response: Response): Stage => ({
   name: "inner",
@@ -38,16 +47,31 @@ const staticStage = (response: Response): Stage => ({
 
 describe("SHIM_HTML", () => {
   it("sets the guest dataset flag", () => {
-    expect(SHIM_HTML).toContain(
-      `document.documentElement.dataset.bbGuest = "1"`,
-    );
+    expect(SHIM_HTML).toContain(`dataset.bbGuest="1"`);
   });
 
-  it("scopes every selector under the guest root and hides it", () => {
+  it("scopes each selector under the right root and hides it", () => {
     for (const sel of CHROME_SELECTORS) {
-      expect(SHIM_HTML).toContain(`[${GUEST_ROOT_ATTR}] ${sel.css}`);
+      // Owner-only chrome is scoped under the bare guest root; read-only chrome
+      // (the composer) is additionally scoped under the read-perm attribute so
+      // it hides only on a read thread.
+      const root = sel.readOnly
+        ? `[${GUEST_ROOT_ATTR}][${PERM_ROOT_ATTR}="${PERM_READ_FLAG}"]`
+        : `[${GUEST_ROOT_ATTR}]`;
+      expect(SHIM_HTML).toContain(`${root} ${sel.css}`);
     }
     expect(SHIM_HTML).toContain("display: none !important");
+  });
+
+  it("scopes the composer hide only under the read-perm attribute", () => {
+    // The composer selector must NOT be hidden for every guest — a write guest
+    // keeps it. So the bare guest root must not directly hide `[data-app-composer]`.
+    expect(SHIM_HTML).not.toContain(
+      `[${GUEST_ROOT_ATTR}] [data-app-composer]`,
+    );
+    expect(SHIM_HTML).toContain(
+      `[${GUEST_ROOT_ATTR}][${PERM_ROOT_ATTR}="${PERM_READ_FLAG}"] [data-app-composer]`,
+    );
   });
 
   it("carries the selectors corrected against the audited bb build", () => {
@@ -55,6 +79,58 @@ describe("SHIM_HTML", () => {
     expect(SHIM_HTML).toContain(`[data-testid="plugin-nav-sidebar-items"]`);
     expect(SHIM_HTML).not.toContain(`.plugin-nav-sidebar-items`);
     expect(SHIM_HTML).toContain(`[aria-label^="Settings"]`);
+  });
+
+  it("carries a route-change watcher that re-evaluates the perm attribute", () => {
+    // The composer hide is client-side re-evaluated on SPA navigation, so the
+    // watcher must patch history and toggle the perm attribute by URL thread id.
+    expect(SHIM_HTML).toContain("pushState");
+    expect(SHIM_HTML).toContain("popstate");
+    expect(SHIM_HTML).toContain(PERM_ROOT_ATTR);
+    // The thread-id extractor greps the URL path (escaped slashes in the regex).
+    expect(SHIM_HTML).toContain("threads");
+  });
+
+  it("base shim carries an empty read-thread set (hides no composer)", () => {
+    expect(SHIM_HTML).toContain("new Set([])");
+  });
+});
+
+// =========================================================================
+// shimForPerms — per-request composer hide driven by ctx.perms
+// =========================================================================
+
+describe("shimForPerms", () => {
+  const T_READ = "thr_read1";
+  const T_WRITE = "thr_write1";
+
+  it("returns the base shim for null / empty / write-only perms", () => {
+    expect(shimForPerms(null)).toBe(SHIM_HTML);
+    expect(shimForPerms([])).toBe(SHIM_HTML);
+    // No read threads → nothing thread-specific to hide → identical bytes.
+    expect(shimForPerms([{ threadId: T_WRITE, mode: "write" }])).toBe(SHIM_HTML);
+  });
+
+  it("embeds only the read-mode thread ids in the client script", () => {
+    const perms: ThreadPerm[] = [
+      { threadId: T_READ, mode: "read" },
+      { threadId: T_WRITE, mode: "write" },
+    ];
+    const shim = shimForPerms(perms);
+    // The read thread is in the injected set; the write thread is NOT — a write
+    // guest keeps the composer, so its id need not (and does not) appear.
+    expect(shim).toContain(`new Set(["${T_READ}"])`);
+    expect(shim).not.toContain(T_WRITE);
+    // Same style/CSS block as the base shim — only the script's set differs.
+    expect(shim).toContain(
+      `[${GUEST_ROOT_ATTR}][${PERM_ROOT_ATTR}="${PERM_READ_FLAG}"] [data-app-composer]`,
+    );
+  });
+
+  it("escapes '<' in a thread id so a payload cannot break out of <script>", () => {
+    const shim = buildShimHtml(undefined, ["thr_</script><x>"]);
+    expect(shim).not.toContain("</script><x>");
+    expect(shim).toContain("\\u003c");
   });
 });
 
@@ -181,6 +257,20 @@ describe("chromeShimStage", () => {
     expect(result.kind).toBe("respond");
     if (result.kind !== "respond") throw new Error("unreachable");
     expect(await result.response.text()).toContain(SHIM_HTML);
+  });
+
+  it("injects the read thread's id when the guest has a read perm", async () => {
+    const inner = staticStage(html("<html><head></head></html>"));
+    const result = await chromeShimStage(inner).run(
+      ctxWith("bbsh_token", [
+        { threadId: "thr_readA", mode: "read" },
+        { threadId: "thr_writeB", mode: "write" },
+      ]),
+    );
+    if (result.kind !== "respond") throw new Error("unreachable");
+    const text = await result.response.text();
+    expect(text).toContain(`new Set(["thr_readA"])`);
+    expect(text).not.toContain("thr_writeB");
   });
 
   it("leaves the response unchanged when there is no token (non-guest)", async () => {

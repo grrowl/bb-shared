@@ -202,6 +202,46 @@ describe("authorize", () => {
   });
 });
 
+describe("guest boot allowlist (issue 31)", () => {
+  it("classifies the WS + system UI-config endpoints as non-thread", () => {
+    for (const p of [
+      "/ws",
+      "/system/execution-options",
+      "/system/version",
+      "/system/providers",
+      "/system/providers/codex/logo",
+    ]) {
+      expect(classifyPath(p).kind, p).toBe("non-thread");
+    }
+  });
+
+  it("allows a guest to GET them but not mutate", async () => {
+    const { store, rawToken } = await storeWithToken([
+      { thread_id: "t1", perm: "read" },
+    ]);
+    const get = await authorize(store, {
+      token: rawToken,
+      path: "/ws",
+      method: "GET",
+    });
+    expect(get.allowed).toBe(true);
+    const post = await authorize(store, {
+      token: rawToken,
+      path: "/system/execution-options",
+      method: "POST",
+    });
+    expect(post.allowed).toBe(false);
+  });
+
+  it("still denies the full thread list and terminal sockets", () => {
+    // /api/v1/threads (no id) would leak every thread — must stay denied.
+    expect(classifyPath("/api/v1/threads").kind).toBe("invalid");
+    // /ws/terminals/* is not the exact /ws entry → invalid (belt-and-braces
+    // with the ws-frame-filter's own 403).
+    expect(classifyPath("/ws/terminals/abc").kind).toBe("invalid");
+  });
+});
+
 describe("deny-by-default (issues 23, 24)", () => {
   it("read guest cannot POST to another plugin's RPC", async () => {
     const { store, rawToken } = await storeWithToken([

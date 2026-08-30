@@ -70,13 +70,30 @@ const NON_THREAD_EXACT = new Set([
   "/sidebar-bootstrap",
   "/plugins",
   "/hosts",
+  // Read-only UI config the guest SPA needs to render the thread + composer.
+  // Verified to carry no secrets (provider/model capabilities, version) — see
+  // issue 31 authz trace. `/system/providers` is a prefix (below) for logos.
+  "/system/execution-options",
+  "/system/version",
+  // The main app WebSocket. The upgrade must pass authz so the guest gets live
+  // updates; the ws-frame-filter (issue 11) is the actual scope enforcer for
+  // its frames, and `/ws/terminals/*` stays denied (not an exact match here,
+  // and the frame filter 403s it regardless).
+  "/ws",
 ]);
 
 // Prefix families: the path itself or any subpath is a non-thread endpoint.
 // `/projects` is intentionally NOT here — project paths get their own scoped
 // classification (see `classifyPath`), so an out-of-scope project read is
 // denied instead of passed through (issue 24).
-const NON_THREAD_PREFIXES = ["/plugin-settings", "/plugins", "/hosts"];
+const NON_THREAD_PREFIXES = [
+  "/plugin-settings",
+  "/plugins",
+  "/hosts",
+  // Provider list + per-provider logo (`/system/providers/<id>/logo`). Read-only
+  // model/provider UI config, no secrets (issue 31).
+  "/system/providers",
+];
 
 // Static frontend assets. Two safe shapes only: the hashed bundle under
 // `/assets/…`, and a single-segment root file with a static extension

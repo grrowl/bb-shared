@@ -174,7 +174,11 @@ describe("authzStage", () => {
     expect(u.searchParams.get("token")).toBe(GUEST_TOKEN);
     expect(u.searchParams.get("path")).toBe("/api/v1/threads/T1/detail");
     expect(u.searchParams.get("method")).toBe("GET");
-    expect(req.headers.get("authorization")).toBe(`Bearer ${AUTHZ_TOKEN}`);
+    // bb's plugin-token auth (0.40) reads `x-bb-plugin-token`, NOT
+    // `Authorization: Bearer` (which bb 401s). Sending it wrong 404s every
+    // guest request against a real bb.
+    expect(req.headers.get("x-bb-plugin-token")).toBe(AUTHZ_TOKEN);
+    expect(req.headers.get("authorization")).toBeNull();
   });
 
   it("deny → 403 { error: scope } for an API path", async () => {

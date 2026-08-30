@@ -494,6 +494,30 @@ export class WorkerLifecycle {
   // Bootstrap: reuse a healthy persisted worker, else wipe + start fresh.
   // -------------------------------------------------------------------------
 
+  /**
+   * The script name a persisted worker was deployed under, read from the first
+   * label of its `workers.dev` hostname (`bb-shared.<sub>.workers.dev` →
+   * `bb-shared`). Null if the URL is unparseable.
+   */
+  private deployedScriptName(url: string): string | null {
+    try {
+      return new URL(url).hostname.split(".")[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * True when a persisted worker was deployed under a script name that no longer
+   * matches the current default — i.e. the worker was renamed since. Reusing it
+   * would keep serving the old name (and, more importantly, the old worker
+   * bundle), so we force a wipe + fresh deploy instead.
+   */
+  private isStaleDeployment(rec: WorkerRecord): boolean {
+    const deployed = this.deployedScriptName(rec.url);
+    return deployed !== null && deployed !== WORKER_DEPLOY_DEFAULTS.scriptName;
+  }
+
   private async bootstrapFromSettings(): Promise<void> {
     // OAuth-claimed worker takes precedence (§12A): if an OAuth record exists,
     // adopt the claimed worker (refresh → discover → re-attach live). If that
@@ -506,9 +530,15 @@ export class WorkerLifecycle {
       this.setState("idle");
       return;
     }
-    if (this.isExpired(rec) || !(await this.healthCheck(rec.url))) {
+    if (
+      this.isExpired(rec) ||
+      this.isStaleDeployment(rec) ||
+      !(await this.healthCheck(rec.url))
+    ) {
       this.deps.log.info(
-        "persisted worker is dead/expired on start — wiping settings",
+        this.isStaleDeployment(rec)
+          ? `persisted worker was deployed under a stale script name (${this.deployedScriptName(rec.url)} ≠ ${WORKER_DEPLOY_DEFAULTS.scriptName}) — wiping to redeploy`
+          : "persisted worker is dead/expired on start — wiping settings",
       );
       await this.deps.recordStore.clear();
       this.record = null;
@@ -552,7 +582,9 @@ export class WorkerLifecycle {
     }
 
     const healthy =
-      !this.isExpired(this.record) && (await this.healthCheck(this.record.url));
+      !this.isExpired(this.record) &&
+      !this.isStaleDeployment(this.record) &&
+      (await this.healthCheck(this.record.url));
     if (healthy) {
       if (!this.tunnel) this.startTunnel(this.record.url, this.record.tunnelSecret); // re-arm a dropped tunnel
       if (this.state !== "live") this.setState("live");

@@ -117,7 +117,7 @@ export function isGuestDeniedRpcPath(pathname: string): boolean {
   return GUEST_DENIED_RPC_RE.test(pathname);
 }
 
-/** Build the bearer-authed authz query for this guest request. */
+/** Build the plugin-token-authed authz query for this guest request. */
 function buildAuthzRequest(ctx: RequestContext, token: string): Request {
   const url = new URL(AUTHZ_ENDPOINT_PATH, ctx.workerPublicOrigin);
   url.searchParams.set("token", token);
@@ -126,7 +126,12 @@ function buildAuthzRequest(ctx: RequestContext, token: string): Request {
   return new Request(url, {
     method: "GET",
     headers: {
-      authorization: `Bearer ${ctx.env.AUTHZ_TOKEN}`,
+      // bb's `auth: "token"` routes take the per-plugin token via the
+      // `x-bb-plugin-token` header (bb 0.40). `?token=` is unavailable — it
+      // already carries the GUEST token above — and `Authorization: Bearer` is
+      // NOT accepted (bb 401s it), so this header is the only channel. Sending
+      // it the wrong way fails authz closed and 404s every guest request.
+      "x-bb-plugin-token": ctx.env.AUTHZ_TOKEN,
       // Set Origin like every tunnel-bound request so the local half's
       // loopback rewrite (issue 14) matches and bb's Origin guard accepts it.
       origin: ctx.workerPublicOrigin,

@@ -1,5 +1,89 @@
 # bb-shared UX refinement
 
+## Re-grill 2026-08-30 — the Link-is-a-recipient model (supersedes parts below)
+
+Now that the guest flow works end to end, the owner re-opened the model itself.
+The four complaints (multiple named links with no visible purpose, buttons that
+disable for no stated reason, awkward link management, a superfluous per-link
+upgrade/downgrade) all trace to one decision the 2026-08-28 pass kept: a link is
+a bag of thread-shares. The re-grill replaces the mental model. Copy stays in
+the owner's plain style.
+
+### The model (locked)
+
+- A **Link is a named recipient** you grant threads to. The name is who it is
+  for, like "Head of Product". You still call the object a "Link" in the UI, but
+  the flow reads as "grant this thread to a Link".
+- A Link holds many thread grants. **Perm is stored per (link, thread) only.
+  There is no per-link perm in the data model and never has been** (the `perm`
+  field lives on each `Share`, not the `Token`). Per-thread perm is what keeps
+  the one-URL-per-person promise: a recipient can have most threads read and one
+  write under a single Link, instead of being forced into a second URL.
+- **A Link shows a derived perm summary, read-only** — the highest perm across
+  its threads (write if any thread is write, else read), as a small badge. There
+  is no editable link-level perm control anywhere. This is the fix for the
+  superfluous per-link toggle (complaint 4); what looked link-wide was really
+  the per-thread Upgrade/Downgrade button on a single-thread link.
+- Multi-thread is a real case (share a set of epic threads with one person) and
+  single-thread is a real case (share one thread with a coworker). Both are just
+  "a Link with N threads", so one URL per recipient is correct.
+- **Ephemeral for now.** The whole set still resets on bb restart, and the owner
+  re-shares in the morning. Durable per-person links (surviving restart, secret
+  persisted to disk with the ticket-29 envelope) are deferred, not chosen.
+
+### One control everywhere: a 3-state segment [off | read | write]
+
+Both the popover row and the panel row use the same control for a thread on a
+Link: a three-state segment. Off means the thread is not on that Link. Clicking
+read or write grants at that perm; clicking off revokes. This single control
+replaces, in one move: the two add buttons that mysteriously disabled
+(complaint 2), the separate Upgrade and Downgrade button, the remove trash
+icon, and the standalone perm chip. Grant, upgrade, downgrade, and revoke are
+now the same gesture.
+
+### Surface 3, the share popover (locked)
+
+- Recipient-first. Title stays "Share this thread". Below it, a list of Links,
+  each row showing the Link name and the 3-state segment for this thread.
+- "New link" auto-names the Link with the existing verb-noun generator
+  (`randomLabel`, e.g. "brave-otter"), grants the current thread, and copies the
+  URL instantly. No name prompt. Rename lives in the panel.
+- No more "already shared as X" disabled state to explain, because the segment
+  simply shows the current perm.
+
+### Surface 5, the panel (locked)
+
+- The share row becomes the same 3-state segment. Drop the perm chip, the
+  Upgrade/Downgrade button, and the remove icon.
+- **Show thread titles, not raw ids.** listTokens resolves each shared thread's
+  title (add the title to the RPC contract plus a bb thread-title lookup; fall
+  back to the id if the thread is gone).
+- **Copy URL always works.** The server holds the raw link in memory for the
+  session, so every listed link can be copied until restart. Remove the disabled
+  state and the "shown once" tooltip. This is the surface-4 copy-again work,
+  now in scope because links are ephemeral anyway.
+
+### Surface 6, the guest view (locked, now building)
+
+- **Hide the composer for a read-only guest.** The shim carries the per-thread
+  perm the worker already resolved at authz time, and hides the message box for
+  a read grant so a read guest never types into a dead-end "scope" error. This
+  was locked on 2026-08-28 and is now in this build pass.
+
+### Build order
+
+1. Server: hold raw links in memory for the session; add thread titles and the
+   raw URL to listTokens (contract change). Underpins copy-always and titles.
+2. Shared 3-state segment component; swap it into the popover and the panel.
+3. Popover: recipient-first list, auto-named New link, instant copy.
+4. Panel: titles, copy-always, segment rows, drop chip/upgrade/remove.
+5. Worker shim: carry per-thread perm, hide the composer for read guests.
+
+Everything below is the earlier 2026-08-28 pass, kept for the copy and the
+worker/claim design. Where it conflicts with the model above, the model wins.
+
+---
+
 Decisions from the owner grilling session on 2026-08-28. Copy is written in the
 owner's plain style (see ~/.claude/skills/plain-writing). We walked the owner
 UX surface by surface. Each surface below lists what was locked.

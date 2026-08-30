@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildShareUrl,
   DuplicateShareError,
+  enrichToken,
   generateRawToken,
   generateTokenId,
   hashToken,
@@ -12,6 +13,7 @@ import {
   ShareNotFoundError,
   TokenNotFoundError,
 } from "./token-store";
+import type { Token } from "./token-store";
 import { randomBytes } from "node:crypto";
 
 const fixedKey = () => Buffer.alloc(32, 0x42);
@@ -314,6 +316,77 @@ describe("buildShareUrl", () => {
     expect(url).toBe(
       "https://guest.example/projects/p1/threads/t1?token=bbsh_raw",
     );
+  });
+});
+
+describe("enrichToken (issue 32)", () => {
+  const baseToken = (shares: Token["shares"]): Token => ({
+    id: "bbsh_id",
+    hash: "h",
+    label: "brave-otter",
+    created_at: 1_000,
+    shares,
+  });
+  const share = (thread_id: string, project_id = "p1"): Token["shares"][number] => ({
+    thread_id,
+    project_id,
+    perm: "read",
+    added_at: 2_000,
+  });
+
+  it("resolves a title per share from the resolver", async () => {
+    const titles: Record<string, string> = { t1: "First thread", t2: "Second" };
+    const wire = await enrichToken(baseToken([share("t1"), share("t2")]), {
+      resolveTitle: async (id) => titles[id] ?? null,
+    });
+    expect(wire.shares.map((s) => s.title)).toEqual(["First thread", "Second"]);
+  });
+
+  it("falls back to the thread id when the thread has no title", async () => {
+    const wire = await enrichToken(baseToken([share("t1")]), {
+      resolveTitle: async () => null,
+    });
+    expect(wire.shares[0].title).toBe("t1");
+  });
+
+  it("falls back to the thread id when the resolver throws (thread gone)", async () => {
+    const wire = await enrichToken(baseToken([share("t-gone")]), {
+      resolveTitle: async () => {
+        throw new Error("thread not found");
+      },
+    });
+    expect(wire.shares[0].title).toBe("t-gone");
+  });
+
+  it("builds a URL that deep-links to shares[0] and equals buildShareUrl", async () => {
+    const wire = await enrichToken(baseToken([share("t1"), share("t2")]), {
+      rawToken: "bbsh_raw",
+      workerOrigin: "https://guest.example",
+      resolveTitle: async () => null,
+    });
+    // Identical to what mintToken returns: firstThread == shares[0].
+    expect(wire.url).toBe(
+      buildShareUrl("bbsh_raw", {
+        workerOrigin: "https://guest.example",
+        firstThread: { project_id: "p1", thread_id: "t1" },
+      }),
+    );
+  });
+
+  it("builds the tokenless URL form when the token has no shares", async () => {
+    const wire = await enrichToken(baseToken([]), {
+      rawToken: "bbsh_raw",
+      workerOrigin: "https://guest.example",
+      resolveTitle: async () => null,
+    });
+    expect(wire.url).toBe("https://guest.example/?token=bbsh_raw");
+  });
+
+  it("omits the URL when the raw token is no longer cached", async () => {
+    const wire = await enrichToken(baseToken([share("t1")]), {
+      resolveTitle: async () => "First",
+    });
+    expect(wire.url).toBeUndefined();
   });
 });
 

@@ -70,6 +70,24 @@ now the same gesture.
   a read grant so a read guest never types into a dead-end "scope" error. This
   was locked on 2026-08-28 and is now in this build pass.
 
+### Implementation status (2026-08-30)
+
+All five issues landed on main and the plugin was rebuilt + reloaded (running
+clean). Each was built by an opus subthread, reviewed by sonnet, and the two
+security-relevant ones (32 bearer distribution, 36 guest script injection) also
+cleared a fable security pass. Tests: plugin 203 passed / 1 skipped, worker 197
+passed; tsc clean both sides.
+
+- 32 (server: listTokens per-token `url` + per-share `title`) — merged.
+- 33 (`PermSegment` [off|read|write] control) — merged.
+- 34 (recipient-first share popover) — merged.
+- 35 (panel: segment rows, titles, copy-always, derived badge) — merged.
+- 36 (worker: hide composer for read guests) — merged.
+
+Open follow-up (not blocking): harden the worker's guest RPC-deny regex against
+`%2F`-encoded paths (fable's residual on 32; the plugin-authz mutating-method
+deny backstops it today). Visual/subjective UX review by the owner still pending.
+
 ### Build order
 
 1. Server: hold raw links in memory for the session; add thread titles and the

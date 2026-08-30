@@ -6,20 +6,24 @@
 // (48px chrome, 28px controls per the SDK docs) and portalled via the
 // vendored `Popover` — the row is too short for an inline form.
 //
-// RPC + realtime:
-// - `listTokens()` seeds the "Existing tokens" list on open; a
-//   `REALTIME_CHANNELS.tokensChanged` subscription refreshes it so a mint or
-//   share change made in the nav panel (issue 16) or another window is
-//   reflected here immediately.
-// - Per-token "Add this thread as read | write" calls `addShare`; each perm
-//   button greys out when the thread is already shared on that token with a
-//   perm at least as permissive as the button's (write covers read).
-// - The "Mint new share" section calls `mintToken` → `addShare` and copies
-//   the returned guest URL to the clipboard.
+// Recipient-first model (issue 34): a Link is a named recipient you grant
+// threads to. The popover lists the Links and, per row, shows a 3-state
+// `PermSegment` (off | read | write) for THIS thread's grant on that Link.
+// Off revokes, read/write grant. A small read-only badge shows the Link's
+// derived perm summary — the highest perm across all its threads.
 //
-// The "Manage all links" link routes to this plugin's `tokens` nav panel,
-// which will be fleshed out by issue 16. The panel path is registered in
-// `app.tsx`; `useBbNavigate().toPluginPanel("tokens")` resolves to
+// RPC + realtime:
+// - `listTokens()` seeds the list on open; a `REALTIME_CHANNELS.tokensChanged`
+//   subscription refreshes it so a share change made in the nav panel or
+//   another window is reflected here immediately.
+// - The segment calls `removeShare` (off), `addShare` (a fresh read/write), or
+//   `updateShare` (read↔write on a thread already shared).
+// - "New link" calls `mintToken` → attaches this thread → copies the returned
+//   guest URL. The server auto-names the Link (verb-noun) when no label is
+//   passed.
+//
+// The "Manage all links" link routes to this plugin's `tokens` nav panel.
+// `useBbNavigate().toPluginPanel("tokens")` resolves to
 // `/plugins/shared/tokens` at runtime.
 import * as React from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -33,6 +37,10 @@ import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 
 import { Button } from "../components/ui/button.js";
 import {
+  PermSegment,
+  type PermValue,
+} from "../components/ui/perm-segment.js";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -42,17 +50,35 @@ import { REALTIME_CHANNELS } from "../lib/realtime-channels.js";
 import type { Perm, Token, rpcContract } from "../server.js";
 import { subscribeShareOpen } from "./open-bus.js";
 
-// One row's worth of state — the two buttons per token can be pending
-// independently, so we key by `${tokenId}:${perm}`.
-type BusyKey = `${string}:${Perm}`;
-
 const FLASH_MS = 1500;
-const PERM_RANK: Record<Perm, number> = { read: 0, write: 1 };
 
-/** Whether `existing` already grants at least `wanted`. */
-function isPermCovered(existing: Perm | undefined, wanted: Perm): boolean {
-  if (existing === undefined) return false;
-  return PERM_RANK[existing] >= PERM_RANK[wanted];
+/** The Link's highest grant across all its threads, for the read-only badge:
+ * write if any share is write, else read, else null when the Link holds none. */
+export function derivedPerm(token: Token): Perm | null {
+  if (token.shares.length === 0) return null;
+  return token.shares.some((share) => share.perm === "write") ? "write" : "read";
+}
+
+/** What a segment change on this thread's row means as an rpc intent, given
+ * the thread's current perm on the Link (`undefined` when not shared) and the
+ * segment's next value. Pure so it can be tested without a DOM harness; the
+ * PermSegment never re-fires the selected cell, so the no-op update case
+ * (`update` with an unchanged perm) is unreachable in practice. */
+export type ShareAction =
+  | { kind: "none" }
+  | { kind: "remove" }
+  | { kind: "add"; perm: Perm }
+  | { kind: "update"; perm: Perm };
+
+export function resolveShareAction(
+  existing: Perm | undefined,
+  next: PermValue,
+): ShareAction {
+  if (next === "off") {
+    return existing === undefined ? { kind: "none" } : { kind: "remove" };
+  }
+  if (existing === undefined) return { kind: "add", perm: next };
+  return { kind: "update", perm: next };
 }
 
 interface ShareFormProps {
@@ -68,9 +94,9 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   const [tokens, setTokens] = React.useState<Token[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
-  const [busyKeys, setBusyKeys] = React.useState<Set<BusyKey>>(
-    () => new Set(),
-  );
+  // The one row whose segment change is in flight; its segment is disabled
+  // until the RPC settles so a double-tap can't race two mutations.
+  const [busyTokenId, setBusyTokenId] = React.useState<string | null>(null);
   const [flash, setFlash] = React.useState<string | null>(null);
   const [newPerm, setNewPerm] = React.useState<Perm>("read");
   const [minting, setMinting] = React.useState(false);
@@ -112,38 +138,52 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     }, FLASH_MS);
   }, []);
 
-  const setBusy = React.useCallback((key: BusyKey, busy: boolean) => {
-    setBusyKeys((prev) => {
-      const next = new Set(prev);
-      if (busy) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-  }, []);
-
-  const handleAddShare = React.useCallback(
-    async (tokenId: string, perm: Perm) => {
-      const key: BusyKey = `${tokenId}:${perm}`;
-      setBusy(key, true);
+  // One gesture for grant / upgrade / downgrade / revoke on this thread's row.
+  // `off` revokes; a fresh read/write adds; read↔write on an existing share
+  // updates. The PermSegment never re-fires for the already-selected cell, so
+  // we don't guard against a no-op change here.
+  const handleSegmentChange = React.useCallback(
+    async (token: Token, next: PermValue) => {
+      const existing = token.shares.find(
+        (share) => share.thread_id === threadId,
+      );
+      const action = resolveShareAction(existing?.perm, next);
+      if (action.kind === "none") return;
+      setBusyTokenId(token.id);
       setActionError(null);
       try {
-        await rpc.call("addShare", {
-          token_id: tokenId,
-          thread_id: threadId,
-          project_id: projectId,
-          perm,
-        });
-        showFlash(`Shared as ${perm}`);
+        if (action.kind === "remove") {
+          await rpc.call("removeShare", {
+            token_id: token.id,
+            thread_id: threadId,
+          });
+          showFlash("Removed.");
+        } else if (action.kind === "add") {
+          await rpc.call("addShare", {
+            token_id: token.id,
+            thread_id: threadId,
+            project_id: projectId,
+            perm: action.perm,
+          });
+          showFlash(`Shared as ${action.perm}`);
+        } else {
+          await rpc.call("updateShare", {
+            token_id: token.id,
+            thread_id: threadId,
+            perm: action.perm,
+          });
+          showFlash(`Shared as ${action.perm}`);
+        }
         // Realtime will refresh, but a local refetch keeps the UI honest if
         // the broadcast is delayed.
         load();
       } catch (err: unknown) {
         setActionError(err instanceof Error ? err.message : String(err));
       } finally {
-        setBusy(key, false);
+        setBusyTokenId(null);
       }
     },
-    [rpc, threadId, projectId, showFlash, load, setBusy],
+    [rpc, threadId, projectId, showFlash, load],
   );
 
   const handleMint = React.useCallback(async () => {
@@ -152,7 +192,8 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     try {
       // Mint and attach the current thread in one call, so `url` is a deep
       // link straight to this thread (the query `?token=` form the worker
-      // needs to set the session cookie).
+      // needs to set the session cookie). The label is omitted so the server
+      // auto-names the Link with its verb-noun generator.
       const { url } = await rpc.call("mintToken", {
         firstThread: { thread_id: threadId, project_id: projectId, perm: newPerm },
       });
@@ -184,6 +225,8 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     navigate.toPluginPanel("tokens");
   }, [navigate, onClose]);
 
+  const hasLinks = tokens !== null && tokens.length > 0;
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between">
@@ -195,18 +238,15 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         ) : null}
       </div>
 
-      {/* Add this thread to a link you already made -------------------- */}
+      {/* Grant this thread to a Link (recipient) ----------------------- */}
       <section className="flex flex-col gap-2">
-        <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Add to a link
-        </h4>
         {loadError !== null ? (
           <p className="text-xs text-destructive">{loadError}</p>
         ) : tokens === null ? (
           <p className="text-xs text-muted-foreground">Loading…</p>
         ) : tokens.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No share link yet. Create one below to share this thread.
+            No link yet. Create one below to share this thread.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -214,40 +254,36 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
               const existing = token.shares.find(
                 (share) => share.thread_id === threadId,
               );
+              const value: PermValue = existing?.perm ?? "off";
+              const summary = derivedPerm(token);
               return (
                 <li
                   key={token.id}
                   className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5"
                 >
-                  <span
-                    className="min-w-0 truncate text-xs font-medium"
-                    title={token.label}
-                  >
-                    {token.label}
-                  </span>
-                  <span className="flex shrink-0 gap-1">
-                    {(["read", "write"] as const).map((perm) => {
-                      const covered = isPermCovered(existing?.perm, perm);
-                      const busy = busyKeys.has(`${token.id}:${perm}`);
-                      return (
-                        <Button
-                          key={perm}
-                          variant="outline"
-                          size="sm"
-                          disabled={covered || busy}
-                          onClick={() => void handleAddShare(token.id, perm)}
-                          className={cn("h-7 px-2 text-xs")}
-                          aria-label={
-                            covered
-                              ? `Already shared as ${perm} on ${token.label}`
-                              : `Add this thread as ${perm} on ${token.label}`
-                          }
-                        >
-                          {perm}
-                        </Button>
-                      );
-                    })}
-                  </span>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span
+                      className="min-w-0 truncate text-xs font-medium"
+                      title={token.label}
+                    >
+                      {token.label}
+                    </span>
+                    {summary !== null ? (
+                      <span
+                        className="w-fit rounded bg-muted px-1 py-px text-[10px] uppercase tracking-wide text-muted-foreground"
+                        title="Highest access across this link's threads"
+                      >
+                        {summary}
+                      </span>
+                    ) : null}
+                  </div>
+                  <PermSegment
+                    value={value}
+                    onChange={(next) => void handleSegmentChange(token, next)}
+                    disabled={busyTokenId === token.id}
+                    aria-label={`This thread's access on ${token.label}`}
+                    className="shrink-0"
+                  />
                 </li>
               );
             })}
@@ -291,11 +327,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
             onClick={() => void handleMint()}
             className="h-7 px-3 text-xs"
           >
-            {minting
-              ? "Creating…"
-              : tokens && tokens.length > 0
-                ? "Create new link"
-                : "Create link"}
+            {minting ? "Creating…" : hasLinks ? "Create new link" : "Create link"}
           </Button>
         </div>
         {actionError !== null ? (

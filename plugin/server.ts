@@ -126,7 +126,18 @@ const okSchema = z.object({ ok: z.literal(true) }).strict();
 
 export const rpcContract = defineRpcContract({
   mintToken: {
-    input: z.object({ label: z.string().min(1).max(64).optional() }),
+    // `firstThread` attaches a thread in the same call so the returned `url`
+    // is a usable deep link to it, not a bare token URL that resolves nowhere.
+    input: z.object({
+      label: z.string().min(1).max(64).optional(),
+      firstThread: z
+        .object({
+          thread_id: z.string(),
+          project_id: z.string(),
+          perm: permSchema,
+        })
+        .optional(),
+    }),
     output: z.object({ token: tokenSchema, url: z.string() }),
   },
   listTokens: {
@@ -330,7 +341,23 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(rpcContract, {
     async mintToken(input) {
-      const { token, rawToken } = await store.mintToken({ label: input.label });
+      let { token, rawToken } = await store.mintToken({ label: input.label });
+      // Attach the requesting thread in the same call (when given) so the
+      // returned link deep-links straight to it. Without a share the link
+      // resolves nowhere for a guest.
+      if (input.firstThread) {
+        try {
+          await store.addShare(token.id, {
+            thread_id: input.firstThread.thread_id,
+            project_id: input.firstThread.project_id,
+            perm: input.firstThread.perm,
+          });
+          // Re-read so the returned token carries the new share.
+          token = (await store.getToken(token.id)) ?? token;
+        } catch (err) {
+          throw mapStoreError(err);
+        }
+      }
       // Lazy first-deploy (SPEC §"Worker lifecycle"): the first mint triggers
       // the worker deploy. ensureDeployed dedupes and swallows deploy errors,
       // so minting never fails on a worker hiccup — the URL falls back to the
@@ -338,7 +365,15 @@ export default async function plugin(bb: BbPluginApi) {
       // health loop brings a worker up.
       await lifecycle.ensureDeployed();
       const workerOrigin = lifecycle.currentWorkerUrl() ?? undefined;
-      const url = buildShareUrl(rawToken, { workerOrigin });
+      const url = buildShareUrl(rawToken, {
+        workerOrigin,
+        firstThread: input.firstThread
+          ? {
+              project_id: input.firstThread.project_id,
+              thread_id: input.firstThread.thread_id,
+            }
+          : undefined,
+      });
       emitTokensChanged();
       return { token, url };
     },

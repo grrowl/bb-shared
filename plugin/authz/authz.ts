@@ -78,6 +78,20 @@ const NON_THREAD_EXACT = new Set([
 // denied instead of passed through (issue 24).
 const NON_THREAD_PREFIXES = ["/plugin-settings", "/plugins", "/hosts"];
 
+// Static frontend assets. Two safe shapes only: the hashed bundle under
+// `/assets/…`, and a single-segment root file with a static extension
+// (favicons, manifest, fonts). Both structurally exclude `/threads/…` and
+// `/projects/…` (which have deeper segments), so a scoped path can never be
+// mistaken for a static asset even though this is checked first.
+const STATIC_ASSET_PREFIX = "/assets/";
+const ROOT_STATIC_FILE_RE =
+  /^\/[^/]+\.(?:js|mjs|css|map|woff2?|ttf|otf|png|jpe?g|gif|svg|ico|webp|avif|webmanifest)$/i;
+
+/** True for a guest-safe static frontend asset (read-only bundle / root file). */
+export function isStaticAssetPath(path: string): boolean {
+  return path.startsWith(STATIC_ASSET_PREFIX) || ROOT_STATIC_FILE_RE.test(path);
+}
+
 /** Strip query/hash, force a leading slash, drop the `/api/v1` API prefix and
  * any trailing slash. Returns "" for empty input. */
 function normalizePath(rawPath: string): string {
@@ -93,7 +107,17 @@ function normalizePath(rawPath: string): string {
 
 export function classifyPath(rawPath: string): PathClass {
   const path = normalizePath(rawPath);
-  if (!path || path === "/") return { kind: "invalid" };
+  if (!path) return { kind: "invalid" };
+
+  // The SPA shell (`/`) and its static bundle. bb serves its frontend as a
+  // hashed asset graph under `/assets/…` plus a few root files (favicons,
+  // manifest, fonts), all fetched at ABSOLUTE paths with no token — the guest's
+  // session cookie authenticates them (issue 06 worker cookie flow). They carry
+  // no per-guest data (the same bytes for everyone; all scoping is via the API),
+  // so a read is safe. Matched before the API branches; thread/project paths are
+  // matched first below, so a scoped path can never fall through to here. GET is
+  // allowed and mutation denied by `computeAuthz`'s non-thread rule (issue 23).
+  if (path === "/" || isStaticAssetPath(path)) return { kind: "non-thread" };
 
   // Thread paths, top-level or nested under a project. A project-nested thread
   // path (`/projects/{p}/threads/{t}`) MUST classify as a thread so it goes

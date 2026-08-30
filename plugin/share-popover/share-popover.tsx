@@ -150,24 +150,12 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     setMinting(true);
     setActionError(null);
     try {
-      const { token, url } = await rpc.call("mintToken", {});
-      // Mint alone doesn't attach the current thread — do both so the
-      // freshly-copied URL is actually useful. If the addShare fails we
-      // still surface the copied URL, since the token exists.
-      try {
-        await rpc.call("addShare", {
-          token_id: token.id,
-          thread_id: threadId,
-          project_id: projectId,
-          perm: newPerm,
-        });
-      } catch (err: unknown) {
-        setActionError(
-          `Link created, but adding this thread failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      // Mint and attach the current thread in one call, so `url` is a deep
+      // link straight to this thread (the query `?token=` form the worker
+      // needs to set the session cookie).
+      const { url } = await rpc.call("mintToken", {
+        firstThread: { thread_id: threadId, project_id: projectId, perm: newPerm },
+      });
 
       // Clipboard writes require a user gesture; the mint button click is
       // that gesture. On surfaces without the API (older webviews) we

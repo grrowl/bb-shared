@@ -90,7 +90,19 @@ describe("classifyPath", () => {
     expect(classifyPath("/api/v1/settings/secrets").kind).toBe("invalid");
     expect(classifyPath("/api/v1/projects").kind).toBe("invalid");
     expect(classifyPath("").kind).toBe("invalid");
-    expect(classifyPath("/").kind).toBe("invalid");
+  });
+
+  it("classifies the SPA shell and static assets as non-thread (guest-readable)", () => {
+    // The guest SPA loads its shell at `/` and its bundle at absolute paths;
+    // these carry no per-guest data and must be readable (issues 23/06).
+    expect(classifyPath("/").kind).toBe("non-thread");
+    expect(classifyPath("/assets/index-abc123.js").kind).toBe("non-thread");
+    expect(classifyPath("/assets/inter-latin.woff2").kind).toBe("non-thread");
+    expect(classifyPath("/favicon-32x32.png").kind).toBe("non-thread");
+    expect(classifyPath("/manifest.webmanifest").kind).toBe("non-thread");
+    // But a scoped path that merely ends in a static extension is NOT static —
+    // it still classifies as a thread and goes through the scope gate.
+    expect(classifyPath("/threads/t1/export.css").kind).toBe("thread");
   });
 });
 

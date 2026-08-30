@@ -344,9 +344,16 @@ export function buildShareUrl(
   // once the worker deploy pipeline lands and can be surfaced via
   // `getWorkerStatus`.
   const origin = opts.workerOrigin ?? "https://<worker-pending>";
+  // The token rides as `?token=` (the query form), NOT `/{token}/…`. Only the
+  // query form makes the worker drop a session cookie and 302 to the clean
+  // path (worker set-cookie-redirect stage); that cookie is what authenticates
+  // the SPA's absolute sub-requests (`/assets/*`, favicons) — none of which
+  // carry the token in their path. A bare `/{token}/…` link sets no cookie, so
+  // every asset request arrives credential-less and 401s. See SPEC §"Guest
+  // URL" and the worker cookie flow.
   if (opts.firstThread) {
     const { project_id, thread_id } = opts.firstThread;
-    return `${origin}/${rawToken}/projects/${project_id}/threads/${thread_id}`;
+    return `${origin}/projects/${project_id}/threads/${thread_id}?token=${rawToken}`;
   }
-  return `${origin}/${rawToken}/`;
+  return `${origin}/?token=${rawToken}`;
 }

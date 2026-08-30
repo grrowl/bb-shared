@@ -301,15 +301,19 @@ describe("mintToken label dedupe", () => {
 describe("buildShareUrl", () => {
   it("uses the pending placeholder origin when no worker is wired", () => {
     const url = buildShareUrl("bbsh_raw");
-    expect(url.startsWith("https://<worker-pending>/bbsh_raw")).toBe(true);
+    // Query `?token=` form: the worker only sets the session cookie (needed for
+    // absolute asset requests) when the token arrives as a query param.
+    expect(url).toBe("https://<worker-pending>/?token=bbsh_raw");
   });
 
-  it("includes the deep-link thread path when supplied", () => {
+  it("includes the deep-link thread path with the token as a query param", () => {
     const url = buildShareUrl("bbsh_raw", {
       firstThread: { project_id: "p1", thread_id: "t1" },
       workerOrigin: "https://guest.example",
     });
-    expect(url).toBe("https://guest.example/bbsh_raw/projects/p1/threads/t1");
+    expect(url).toBe(
+      "https://guest.example/projects/p1/threads/t1?token=bbsh_raw",
+    );
   });
 });
 

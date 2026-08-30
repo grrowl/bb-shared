@@ -101,22 +101,21 @@ export function extractToken(
 
 /**
  * Build the clean redirect target for a query-token hit: strip the `?token=`
- * param, prepend the token to the path, preserve every other query param and
- * the fragment. Result is a same-origin absolute path suitable for a 302
- * `Location`.
+ * param, preserve every other query param and the fragment, and drop the token
+ * from the URL entirely — the session cookie set in the same 302 carries it on
+ * every following request. The result is a CLEAN bb path (no `/{token}` prefix)
+ * so bb's own client-side router recognises the route and opens the shared
+ * thread directly; a token-prefixed path would be an unknown route and the SPA
+ * would fall back to `/`. The `token` arg is unused now but kept for callers.
  *
  * Example:
  *   in:  https://guests.example.com/projects/p1?token=bbsh_XXX&foo=bar#h
- *   out: /bbsh_XXX/projects/p1?foo=bar#h
+ *   out: /projects/p1?foo=bar#h
  */
-export function buildCleanRedirectPath(url: URL, token: string): string {
+export function buildCleanRedirectPath(url: URL, _token: string): string {
   const params = new URLSearchParams(url.searchParams);
   params.delete(TOKEN_QUERY_PARAM);
   const query = params.toString();
-  const path = url.pathname === "/" ? "" : url.pathname;
-  return (
-    `/${token}${path}` +
-    (query.length > 0 ? `?${query}` : "") +
-    (url.hash || "")
-  );
+  const path = url.pathname === "/" ? "/" : url.pathname;
+  return path + (query.length > 0 ? `?${query}` : "") + (url.hash || "");
 }

@@ -152,35 +152,32 @@ describe("parseCookieHeader → extractToken end-to-end", () => {
 });
 
 describe("buildCleanRedirectPath", () => {
-  it("strips only the token param and prepends /{token} to the path", () => {
+  // The token is dropped from the URL: the cookie set in the same 302 carries
+  // it, and a CLEAN bb path lets bb's client router open the thread directly
+  // (a /{token} prefix is an unknown route → SPA falls back to `/`).
+  it("strips the token param and keeps a clean path", () => {
     const url = new URL(
       `https://guests.example.com/projects/p1?token=${TOKEN_A}&foo=bar`,
     );
-    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe(
-      `/${TOKEN_A}/projects/p1?foo=bar`,
-    );
+    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe("/projects/p1?foo=bar");
   });
 
   it("preserves fragment", () => {
     const url = new URL(
       `https://guests.example.com/projects/p1?token=${TOKEN_A}#h`,
     );
-    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe(
-      `/${TOKEN_A}/projects/p1#h`,
-    );
+    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe("/projects/p1#h");
   });
 
   it("handles the token as the only query param", () => {
     const url = new URL(
       `https://guests.example.com/projects/p1?token=${TOKEN_A}`,
     );
-    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe(
-      `/${TOKEN_A}/projects/p1`,
-    );
+    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe("/projects/p1");
   });
 
-  it("collapses `/` root path so the prefix isn't `/{token}/`", () => {
+  it("keeps `/` for a root entry", () => {
     const url = new URL(`https://guests.example.com/?token=${TOKEN_A}`);
-    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe(`/${TOKEN_A}`);
+    expect(buildCleanRedirectPath(url, TOKEN_A)).toBe("/");
   });
 });

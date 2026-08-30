@@ -4,9 +4,10 @@
 // It is the full-fidelity counterpart to issue 15's quick-share popover:
 //
 // - Tokens are listed grouped by token (each a card). Per token: an inline-
-//   renameable label (`renameToken`), the share list (one row per thread with
-//   a perm chip), per-row remove / upgrade (read→write) / downgrade
-//   (write→read), a copy-URL action, and delete-token behind an `AlertDialog`
+//   renameable label (`renameToken`), a read-only derived perm badge (issue
+//   35 — highest perm across the token's shares), the share list (one row per
+//   thread with an off/read/write segment that grants, upgrades, downgrades,
+//   or revokes), a copy-URL action, and delete-token behind an `AlertDialog`
 //   confirm.
 // - The header carries a "Mint new" button and a live worker-status pill that
 //   calls `getWorkerStatus` — a stub in v0 (issue 07 fills it), so a
@@ -37,6 +38,8 @@ import {
 
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
+import { PermSegment } from "../components/ui/perm-segment.js";
+import type { PermValue } from "../components/ui/perm-segment.js";
 import { cn } from "../lib/utils.js";
 import { REALTIME_CHANNELS } from "../lib/realtime-channels.js";
 import type { Perm, Token, rpcContract } from "../server.js";
@@ -561,14 +564,17 @@ function RenameableLabel({
 }
 
 // ---------------------------------------------------------------------------
-// One share row: thread + perm chip + remove / upgrade / downgrade.
-//
-// Only `thread_id` is available (the RPC contract carries no thread title), so
-// the id doubles as the display name and links to the thread. A friendlier
-// name would need a thread-lookup RPC that v0's contract does not expose.
+// Derived link perm (issue 35). A Link has no perm of its own — perm lives per
+// (link, thread). The card header shows a read-only summary: write if any
+// thread on the link is write, else read; nothing when the link has no shares.
 // ---------------------------------------------------------------------------
 
-function PermChip({ perm }: { perm: Perm }) {
+export function summaryPerm(shares: Token["shares"]): Perm | null {
+  if (shares.length === 0) return null;
+  return shares.some((share) => share.perm === "write") ? "write" : "read";
+}
+
+function PermSummaryBadge({ perm }: { perm: Perm }) {
   return (
     <span
       className={cn(
@@ -577,13 +583,27 @@ function PermChip({ perm }: { perm: Perm }) {
           ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
           : "bg-muted text-muted-foreground",
       )}
+      title={
+        perm === "write"
+          ? "At least one thread on this link is write"
+          : "Every thread on this link is read"
+      }
     >
       {perm}
     </span>
   );
 }
 
-function ShareRow({
+// ---------------------------------------------------------------------------
+// One share row: thread title + a three-state perm segment (issue 35). The
+// segment is the single control for the thread on this link: read / write
+// grant at that perm via `updateShare`, off revokes via `removeShare`
+// (`addShare` isn't reachable from a row that already exists). The title
+// (issue 32, `share.title`, falling back to the id) is the primary label and
+// links to the thread; the raw id rides along as the tooltip.
+// ---------------------------------------------------------------------------
+
+export function ShareRow({
   tokenId,
   share,
   onChanged,
@@ -613,60 +633,38 @@ function ShareRow({
     [onChanged, onError],
   );
 
-  const toggleTarget: Perm = share.perm === "write" ? "read" : "write";
+  const onPermChange = (next: PermValue) => {
+    void run(() =>
+      next === "off"
+        ? rpc.call("removeShare", {
+            token_id: tokenId,
+            thread_id: share.thread_id,
+          })
+        : rpc.call("updateShare", {
+            token_id: tokenId,
+            thread_id: share.thread_id,
+            perm: next,
+          }),
+    );
+  };
 
   return (
     <li className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-background/30 px-2 py-1.5">
       <button
         type="button"
         onClick={() => navigate.toThread(share.thread_id)}
-        className="min-w-0 truncate text-left font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+        className="min-w-0 truncate text-left text-xs text-muted-foreground hover:text-foreground hover:underline"
         title={`Open thread ${share.thread_id}`}
       >
-        {share.thread_id}
+        {share.title ?? share.thread_id}
       </button>
-      <span className="flex shrink-0 items-center gap-1.5">
-        <PermChip perm={share.perm} />
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() =>
-            void run(() =>
-              rpc.call("updateShare", {
-                token_id: tokenId,
-                thread_id: share.thread_id,
-                perm: toggleTarget,
-              }),
-            )
-          }
-          className="h-7 px-2 text-xs"
-          aria-label={
-            toggleTarget === "write"
-              ? "Upgrade to write"
-              : "Downgrade to read"
-          }
-        >
-          {toggleTarget === "write" ? "Upgrade" : "Downgrade"}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={busy}
-          onClick={() =>
-            void run(() =>
-              rpc.call("removeShare", {
-                token_id: tokenId,
-                thread_id: share.thread_id,
-              }),
-            )
-          }
-          className="size-7 text-muted-foreground hover:text-destructive"
-          aria-label="Remove thread from link"
-        >
-          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" aria-hidden />
-        </Button>
-      </span>
+      <PermSegment
+        value={share.perm}
+        onChange={onPermChange}
+        disabled={busy}
+        aria-label={`Permission for ${share.title ?? share.thread_id}`}
+        className="shrink-0"
+      />
     </li>
   );
 }
@@ -674,22 +672,19 @@ function ShareRow({
 // ---------------------------------------------------------------------------
 // One token card.
 //
-// Copy-URL note: `listTokens` never returns the raw bearer (SPEC §"Data
-// model" — only its HMAC is persisted, the raw token is returned once from
-// `mintToken`). So the guest URL is only recoverable for tokens minted in this
-// session; `mintedUrls` carries those. For pre-existing tokens the button is
-// disabled with an explanation rather than fabricating a URL.
+// Copy-URL note: the server holds each link's raw URL in memory for the
+// session (issue 32), so `listTokens` returns `token.url` and every listed
+// link is copyable until restart — no more session-only `mintedUrls` map or
+// "shown once" disabled state.
 // ---------------------------------------------------------------------------
 
-function TokenCard({
+export function TokenCard({
   token,
-  mintedUrl,
   onChanged,
   onFlash,
   onError,
 }: {
   token: Token;
-  mintedUrl: string | undefined;
   onChanged: () => void;
   onFlash: (message: string) => void;
   onError: (message: string) => void;
@@ -697,21 +692,22 @@ function TokenCard({
   const rpc = useRpc<typeof rpcContract>();
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const derivedPerm = summaryPerm(token.shares);
 
   const copyUrl = React.useCallback(async () => {
-    if (mintedUrl === undefined) return;
+    if (token.url === undefined) return;
     const clipboard = globalThis.navigator?.clipboard;
     if (clipboard !== undefined) {
       try {
-        await clipboard.writeText(mintedUrl);
+        await clipboard.writeText(token.url);
         onFlash("Link copied");
         return;
       } catch {
         // fall through to surfacing the URL
       }
     }
-    onFlash(mintedUrl);
-  }, [mintedUrl, onFlash]);
+    onFlash(token.url);
+  }, [token.url, onFlash]);
 
   const confirmDelete = React.useCallback(async () => {
     setDeleting(true);
@@ -729,21 +725,32 @@ function TokenCard({
   return (
     <li className="flex flex-col gap-3 rounded-lg border border-border/60 bg-background/40 p-3">
       <div className="flex items-center justify-between gap-2">
-        <RenameableLabel token={token} onRenamed={onChanged} onError={onError} />
+        <div className="flex min-w-0 items-center gap-2">
+          <RenameableLabel
+            token={token}
+            onRenamed={onChanged}
+            onError={onError}
+          />
+          {derivedPerm !== null ? (
+            <PermSummaryBadge perm={derivedPerm} />
+          ) : null}
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           {/* `ButtonProps` omits `title`; the native tooltip rides the
-              wrapping span instead. */}
+              wrapping span instead. `token.url` is held in memory for the
+              session, but a token whose raw bearer isn't cached comes back
+              without one — copy is disabled with a plain explanation. */}
           <span
             title={
-              mintedUrl === undefined
-                ? "The guest link is shown once, when you create it. Create again to get a fresh link."
+              token.url === undefined
+                ? "Create the link again to copy it"
                 : "Copy the guest link"
             }
           >
             <Button
               variant="outline"
               size="sm"
-              disabled={mintedUrl === undefined}
+              disabled={token.url === undefined}
               onClick={() => void copyUrl()}
               className="h-7 gap-1.5 px-2 text-xs"
             >
@@ -828,10 +835,6 @@ export function TokensPanel(_props: PluginNavPanelProps) {
   const [flash, setFlash] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [minting, setMinting] = React.useState(false);
-  // tokenId → guest URL captured at mint time (see TokenCard copy-URL note).
-  const [mintedUrls, setMintedUrls] = React.useState<Map<string, string>>(
-    () => new Map(),
-  );
 
   const showFlash = React.useCallback((message: string) => {
     setFlash(message);
@@ -844,12 +847,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
     setMinting(true);
     setActionError(null);
     try {
-      const { token, url } = await rpc.call("mintToken", {});
-      setMintedUrls((prev) => {
-        const next = new Map(prev);
-        next.set(token.id, url);
-        return next;
-      });
+      const { url } = await rpc.call("mintToken", {});
       const clipboard = globalThis.navigator?.clipboard;
       if (clipboard !== undefined) {
         try {
@@ -949,7 +947,6 @@ export function TokensPanel(_props: PluginNavPanelProps) {
                 <TokenCard
                   key={token.id}
                   token={token}
-                  mintedUrl={mintedUrls.get(token.id)}
                   onChanged={refetch}
                   onFlash={showFlash}
                   onError={setActionError}

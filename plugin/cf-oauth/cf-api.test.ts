@@ -46,7 +46,7 @@ function fakeCf(config: {
 describe("resolveClaimedWorker", () => {
   it("resolves the live hostname for a single matching account", async () => {
     const fetchImpl = fakeCf({
-      accounts: { "acct-1": ["bb-shared-worker"], "acct-2": ["other"] },
+      accounts: { "acct-1": ["bb-shared"], "acct-2": ["other"] },
       subdomains: { "acct-1": "alice", "acct-2": "bob" },
     });
     const resolved = await resolveClaimedWorker({
@@ -56,8 +56,8 @@ describe("resolveClaimedWorker", () => {
     expect(resolved).toEqual({
       accountId: "acct-1",
       subdomain: "alice",
-      hostname: "bb-shared-worker.alice.workers.dev",
-      url: "https://bb-shared-worker.alice.workers.dev",
+      hostname: "bb-shared.alice.workers.dev",
+      url: "https://bb-shared.alice.workers.dev",
     });
   });
 
@@ -74,14 +74,14 @@ describe("resolveClaimedWorker", () => {
   it("disambiguates two matches via the tunnel-secret probe", async () => {
     const fetchImpl = fakeCf({
       accounts: {
-        "acct-1": ["bb-shared-worker"],
-        "acct-2": ["bb-shared-worker"],
+        "acct-1": ["bb-shared"],
+        "acct-2": ["bb-shared"],
       },
       subdomains: { "acct-1": "alice", "acct-2": "bob" },
     });
     // Only acct-2's worker accepts our secret.
     const probe = async (hostname: string) =>
-      hostname === "bb-shared-worker.bob.workers.dev";
+      hostname === "bb-shared.bob.workers.dev";
     const resolved = await resolveClaimedWorker({
       fetchImpl,
       accessToken: "at",
@@ -94,8 +94,8 @@ describe("resolveClaimedWorker", () => {
   it("returns null when two match but neither accepts our secret", async () => {
     const fetchImpl = fakeCf({
       accounts: {
-        "acct-1": ["bb-shared-worker"],
-        "acct-2": ["bb-shared-worker"],
+        "acct-1": ["bb-shared"],
+        "acct-2": ["bb-shared"],
       },
       subdomains: { "acct-1": "alice", "acct-2": "bob" },
     });
@@ -111,8 +111,8 @@ describe("resolveClaimedWorker", () => {
   it("fails closed when ambiguous and no probe is available", async () => {
     const fetchImpl = fakeCf({
       accounts: {
-        "acct-1": ["bb-shared-worker"],
-        "acct-2": ["bb-shared-worker"],
+        "acct-1": ["bb-shared"],
+        "acct-2": ["bb-shared"],
       },
       subdomains: { "acct-1": "alice", "acct-2": "bob" },
     });
@@ -142,9 +142,9 @@ describe("deleteClaimedWorker", () => {
       fetchImpl,
       accessToken: "at",
       accountId: "acct-1",
-      scriptName: "bb-shared-worker",
+      scriptName: "bb-shared",
     });
-    expect(seen).toContain("/accounts/acct-1/workers/scripts/bb-shared-worker");
+    expect(seen).toContain("/accounts/acct-1/workers/scripts/bb-shared");
     expect(seen).toContain("force=true");
   });
 });

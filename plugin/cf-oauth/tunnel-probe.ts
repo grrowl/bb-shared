@@ -1,6 +1,6 @@
 // Tunnel-secret disambiguation probe (issue 28 §11.3).
 //
-// When two granted accounts both hold a `bb-shared-worker`, the genuine one is
+// When two granted accounts both hold a `bb-shared`, the genuine one is
 // the account whose worker accepts OUR tunnel secret on the `/__tunnel`
 // handshake. The worker checks the bearer against `env.TUNNEL_SECRET` and
 // replies 101 (accepted) or 401 (rejected) — see worker/src/tunnel/tunnel-do.ts.

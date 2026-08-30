@@ -24,8 +24,8 @@ describe("redactSecrets", () => {
 
   it("leaves short, non-secret text intact", () => {
     expect(redactSecrets("HTTP 400 bad request")).toBe("HTTP 400 bad request");
-    expect(redactSecrets("script name bb-shared-worker")).toBe(
-      "script name bb-shared-worker",
+    expect(redactSecrets("script name bb-shared")).toBe(
+      "script name bb-shared",
     );
   });
 });
@@ -93,7 +93,7 @@ function fakeCf(opts: FakeCfOptions = {}): typeof fetch {
       return jsonResponse({ success: true, result: { enabled: true } });
     }
     // The workers.dev URL itself (route-propagation probe).
-    if (u.startsWith("https://bb-shared-worker.sub.workers.dev")) {
+    if (u.startsWith("https://bb-shared.sub.workers.dev")) {
       return new Response("", { status: opts.serveStatus ?? 401 });
     }
     throw new Error(`unexpected fetch: ${method} ${u}`);
@@ -104,7 +104,7 @@ const TUNNEL_SECRET = mintTunnelSecret();
 const AUTHZ_TOKEN = "bbsh_" + "Z".repeat(40);
 
 const input: DeployInput = {
-  scriptName: "bb-shared-worker",
+  scriptName: "bb-shared",
   compatibilityDate: "2025-06-01",
   scriptContent: "export default {}",
   tunnelSecret: TUNNEL_SECRET,
@@ -125,7 +125,7 @@ describe("deployWorker pipeline", () => {
       propagationIntervalMs: 0,
     });
 
-    expect(result.url).toBe("https://bb-shared-worker.sub.workers.dev");
+    expect(result.url).toBe("https://bb-shared.sub.workers.dev");
     expect(result.deploymentId).toBe("dep-1");
     expect(result.accountId).toBe("acct-1");
     // Bug 4: the per-script route MUST be enabled after upload.

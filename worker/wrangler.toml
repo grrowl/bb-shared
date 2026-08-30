@@ -1,4 +1,4 @@
-name = "bb-shared-worker"
+name = "bb-shared"
 main = "src/worker.ts"
 compatibility_date = "2025-06-01"
 workers_dev = true

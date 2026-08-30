@@ -46,7 +46,7 @@ async function wranglerDryRun(workerDir: string, outDir: string): Promise<void> 
  */
 export async function bundleWorker(opts: BundleOptions): Promise<string> {
   const runBuild = opts.runBuild ?? wranglerDryRun;
-  const outDir = await mkdtemp(join(tmpdir(), "bb-shared-worker-"));
+  const outDir = await mkdtemp(join(tmpdir(), "bb-shared-"));
   try {
     opts.log?.info?.(`bundling worker from ${opts.workerDir}`);
     await runBuild(opts.workerDir, outDir);

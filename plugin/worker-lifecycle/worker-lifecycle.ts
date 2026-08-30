@@ -100,7 +100,7 @@ export interface ConnectionStatus {
 // ---------------------------------------------------------------------------
 
 export const WORKER_DEPLOY_DEFAULTS = {
-  scriptName: "bb-shared-worker",
+  scriptName: "bb-shared",
   compatibilityDate: "2025-06-01",
   doClassName: "TunnelDO",
   doBindingName: "TUNNEL_DO",

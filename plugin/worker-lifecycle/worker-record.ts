@@ -46,7 +46,7 @@ export const WORKER_RECORD_SECRET_FIELDS: readonly SecretFieldPath[] = [
 export const workerRecordSchema = z.object({
   /** CF deployment/script identifier for this generation. */
   deploymentId: z.string(),
-  /** Deployed worker URL, e.g. `https://bb-shared-worker.<sub>.workers.dev`. */
+  /** Deployed worker URL, e.g. `https://bb-shared.<sub>.workers.dev`. */
   url: z.string(),
   /** CF temp account id (needed for SDK calls against this account). */
   accountId: z.string(),

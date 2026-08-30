@@ -38,10 +38,10 @@ function claimedRecord(over: Partial<OAuthWorkerRecord> = {}): OAuthWorkerRecord
     claimed: true,
     cfRefreshToken: "rt-1",
     claimedAccountId: "acct-1",
-    scriptName: "bb-shared-worker",
+    scriptName: "bb-shared",
     tunnelSecret: "tsecret",
     writeGranted: true,
-    lastKnownUrl: "https://bb-shared-worker.OLD.workers.dev",
+    lastKnownUrl: "https://bb-shared.OLD.workers.dev",
     deploymentId: "dep-1",
     generation: 3,
     deployedAt: 1000,
@@ -115,13 +115,13 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
       (async () => ({
         accountId: "acct-1",
         subdomain: "newsub",
-        hostname: "bb-shared-worker.newsub.workers.dev",
-        url: "https://bb-shared-worker.newsub.workers.dev",
+        hostname: "bb-shared.newsub.workers.dev",
+        url: "https://bb-shared.newsub.workers.dev",
       })),
     redeployClaimedWorker: async () => {
       redeployCalls++;
       return {
-        url: "https://bb-shared-worker.newsub.workers.dev",
+        url: "https://bb-shared.newsub.workers.dev",
         deploymentId: "dep-redeploy",
       };
     },
@@ -147,7 +147,7 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
     deployWorker: async () => {
       deployCalls++;
       return {
-        url: "https://bb-shared-worker.temp.workers.dev",
+        url: "https://bb-shared.temp.workers.dev",
         deploymentId: "dep-temp",
         accountId: "acct-temp",
         apiToken: "api-temp",
@@ -186,7 +186,7 @@ describe("restart adoption (§12A)", () => {
     expect(h.deployCalls).toBe(0);
     expect(h.tunnels).toHaveLength(1);
     expect(h.tunnels[0].opts.workerUrl).toBe(
-      "https://bb-shared-worker.newsub.workers.dev",
+      "https://bb-shared.newsub.workers.dev",
     );
     expect(h.tunnels[0].opts.tunnelSecret).toBe("tsecret");
 
@@ -194,13 +194,13 @@ describe("restart adoption (§12A)", () => {
     expect(conn.connection).toBe("connected");
     expect(conn.claimed).toBe(true);
     expect(conn.accountId).toBe("acct-1");
-    expect(conn.hostname).toBe("bb-shared-worker.newsub.workers.dev");
+    expect(conn.hostname).toBe("bb-shared.newsub.workers.dev");
     expect(h.lifecycle.getStatus().url).toBe(
-      "https://bb-shared-worker.newsub.workers.dev",
+      "https://bb-shared.newsub.workers.dev",
     );
     // The live URL was persisted back as the cache.
     const saved = h.kv.store.get(OAUTH_RECORD_KEY) as OAuthWorkerRecord;
-    expect(saved.lastKnownUrl).toBe("https://bb-shared-worker.newsub.workers.dev");
+    expect(saved.lastKnownUrl).toBe("https://bb-shared.newsub.workers.dev");
   });
 
   it("wipes the record and falls back when the worker was deleted in the dashboard", async () => {

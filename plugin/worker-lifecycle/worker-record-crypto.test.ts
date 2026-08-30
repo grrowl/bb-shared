@@ -37,7 +37,7 @@ function fakeKv(): RecordKv & { store: Map<string, unknown> } {
 function sampleRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {
     deploymentId: "dep-1",
-    url: "https://bb-shared-worker.sub.workers.dev",
+    url: "https://bb-shared.sub.workers.dev",
     accountId: "acct-1",
     apiToken: "cf-api-token",
     expiresAt: null,
@@ -80,7 +80,7 @@ describe("worker record store — at-rest encryption", () => {
     expect(blob).not.toContain("tsecret");
     expect(blob).not.toContain("claim.example");
     // Metadata stays readable.
-    expect(atRest.url).toBe("https://bb-shared-worker.sub.workers.dev");
+    expect(atRest.url).toBe("https://bb-shared.sub.workers.dev");
     expect(atRest.accountId).toBe("acct-1");
     expect(atRest.generation).toBe(0);
   });

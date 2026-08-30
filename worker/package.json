@@ -1,5 +1,5 @@
 {
-  "name": "bb-shared-worker",
+  "name": "bb-shared",
   "version": "0.0.0",
   "private": true,
   "description": "bb-shared CF Worker: gates guest browsers on tokens, proxies to the owner's local bb over the shared tunnel.",

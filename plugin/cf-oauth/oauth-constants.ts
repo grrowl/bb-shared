@@ -68,7 +68,7 @@ export const DEFAULT_OAUTH_CALLBACK_PORT = 8977;
 export const OAUTH_CALLBACK_PATH = "/oauth/callback";
 
 /** The fixed script name we deploy under; the discovery key (§11.3). */
-export const CF_WORKER_SCRIPT_NAME = "bb-shared-worker";
+export const CF_WORKER_SCRIPT_NAME = "bb-shared";
 
 /**
  * The exact loopback redirect URI for a given port. MUST byte-match the

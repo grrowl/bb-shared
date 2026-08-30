@@ -108,7 +108,7 @@ function fakeKv(): RecordKv & { store: Map<string, unknown> } {
 function sampleRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {
     deploymentId: "dep-1",
-    url: "https://bb-shared-worker.sub.workers.dev",
+    url: "https://bb-shared.sub.workers.dev",
     accountId: "acct-1",
     apiToken: "cf-api-token",
     expiresAt: null,
@@ -207,7 +207,7 @@ function makeHarness(opts: {
       if (opts.deployThrows) throw new Error("deploy boom");
       return (
         opts.deployResult?.() ?? {
-          url: `https://bb-shared-worker.sub.workers.dev`,
+          url: `https://bb-shared.sub.workers.dev`,
           deploymentId: `dep-${gen}`,
           accountId: `acct-${gen}`,
           apiToken: `api-${gen}`,
@@ -242,7 +242,7 @@ describe("WorkerLifecycle", () => {
     const status = h.lifecycle.getStatus();
     expect(status.state).toBe("live");
     expect(status.healthy).toBe(true);
-    expect(status.url).toBe("https://bb-shared-worker.sub.workers.dev");
+    expect(status.url).toBe("https://bb-shared.sub.workers.dev");
     // H1 (ticket 20): the claim bearer is owner-only, via getClaimUrl — never
     // on the status snapshot / worker-changed broadcast.
     expect(h.lifecycle.getClaimUrl()?.url).toContain("https://claim/");
@@ -420,7 +420,7 @@ describe("WorkerLifecycle", () => {
           await new Promise<void>((r) => releasers.push(r));
         }
         return {
-          url: "https://bb-shared-worker.sub.workers.dev",
+          url: "https://bb-shared.sub.workers.dev",
           deploymentId: `dep-${deployCalls}`,
           accountId: `acct-${deployCalls}`,
           apiToken: `api-${deployCalls}`,

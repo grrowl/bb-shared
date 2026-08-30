@@ -32,10 +32,10 @@ function sampleRecord(overrides: Partial<OAuthWorkerRecord> = {}): OAuthWorkerRe
     claimed: true,
     cfRefreshToken: "rt-secret",
     claimedAccountId: "acct-1",
-    scriptName: "bb-shared-worker",
+    scriptName: "bb-shared",
     tunnelSecret: "tsecret",
     writeGranted: true,
-    lastKnownUrl: "https://bb-shared-worker.alice.workers.dev",
+    lastKnownUrl: "https://bb-shared.alice.workers.dev",
     deploymentId: "dep-1",
     generation: 0,
     deployedAt: 1000,
@@ -70,7 +70,7 @@ describe("createOAuthRecordStore", () => {
     expect(blob).not.toContain("tsecret");
     // Non-secret metadata stays readable.
     expect(atRest.claimedAccountId).toBe("acct-1");
-    expect(atRest.scriptName).toBe("bb-shared-worker");
+    expect(atRest.scriptName).toBe("bb-shared");
     expect(atRest.generation).toBe(0);
   });
 

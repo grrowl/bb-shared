@@ -238,8 +238,11 @@ export class WorkerLifecycle {
     const status: WorkerStatus = {
       state: this.state,
       healthy: this.state === "live",
-      tunnel: this.tunnelState,
     };
+    // Only include `tunnel` once a tunnel state exists. An explicit
+    // `tunnel: undefined` is not a JSON value and the bb RPC envelope rejects
+    // the whole result — omit the key instead (mirrors url/expiresAt below).
+    if (this.tunnelState !== undefined) status.tunnel = this.tunnelState;
     if (this.claimedUrl) {
       // A claimed worker is permanent — surface its live hostname, no expiry.
       status.url = this.claimedUrl;

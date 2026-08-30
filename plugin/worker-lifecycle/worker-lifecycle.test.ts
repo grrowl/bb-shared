@@ -17,6 +17,7 @@ import {
   type WorkerLifecycleDeps,
 } from "./worker-lifecycle";
 import type { DeployResult } from "./cf-deploy";
+import { workerStatusSchema } from "../server";
 
 // ---------------------------------------------------------------------------
 // PoW solver.
@@ -277,6 +278,24 @@ describe("WorkerLifecycle", () => {
     const json = JSON.stringify(h.lifecycle.getStatus());
     expect(json).not.toContain("api-");
     expect(json).not.toContain("secret-");
+  });
+
+  it("getStatus carries no explicit undefined value (bb RPC rejects it)", async () => {
+    // Regression: the idle status set `tunnel: undefined` before a tunnel ever
+    // connected. zod `.optional()` accepts that, but bb's RPC envelope rejects
+    // an explicit-undefined property ("result at $result.tunnel is not a JSON
+    // value"), which broke getWorkerStatus on a freshly installed plugin.
+    const h = makeHarness();
+    const idle = h.lifecycle.getStatus();
+    expect(idle.state).toBe("idle");
+    for (const [k, v] of Object.entries(idle)) {
+      expect(v, `status.${k} must not be explicit-undefined`).not.toBe(
+        undefined,
+      );
+    }
+    // Round-trips through the wire schema and JSON without loss.
+    expect(() => workerStatusSchema.parse(idle)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(idle))).toEqual(idle);
   });
 
   it("ensureDeployed is a no-op once live and dedupes concurrent calls", async () => {

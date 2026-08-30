@@ -357,3 +357,73 @@ export function buildShareUrl(
   }
   return `${origin}/?token=${rawToken}`;
 }
+
+// ---------------------------------------------------------------------------
+// Wire projection (issue 32). `listTokens` and `mintToken` return each token
+// enriched with a resolved title per share and the session's guest URL. Both
+// derivations are pure and live here so a single unit test pins the shape; the
+// store never persists titles or the raw token — the caller (server.ts) holds
+// the raw token in memory for the session only.
+// ---------------------------------------------------------------------------
+
+export interface EnrichedShare extends Share {
+  /** Resolved thread title; falls back to `thread_id` when the thread is gone. */
+  title: string;
+}
+
+export interface EnrichedToken extends Omit<Token, "shares"> {
+  shares: EnrichedShare[];
+  /**
+   * The guest link, present while the raw token is still held in memory this
+   * session (Copy link, SPEC surface 4). Absent once the raw token is gone —
+   * every listed token is from this session, so in practice it is always set.
+   */
+  url?: string;
+}
+
+export interface EnrichTokenDeps {
+  /** The raw bearer token for this id, if still cached this session. */
+  rawToken?: string;
+  /** Deployed worker origin passed through to `buildShareUrl`. */
+  workerOrigin?: string;
+  /**
+   * Resolve a thread's display title. Return `null` (or throw) when the thread
+   * is gone — `enrichToken` then falls back to the raw `thread_id`.
+   */
+  resolveTitle: (thread_id: string) => Promise<string | null>;
+}
+
+/**
+ * Project a stored token onto its wire shape: a resolved title per share and
+ * the session guest URL. The URL is built with `buildShareUrl` and deep-links
+ * to `shares[0]` — the thread `mintToken`'s `firstThread` becomes — so the URL
+ * here equals the one `mintToken` returned.
+ */
+export async function enrichToken(
+  token: Token,
+  deps: EnrichTokenDeps,
+): Promise<EnrichedToken> {
+  const shares: EnrichedShare[] = await Promise.all(
+    token.shares.map(async (s) => {
+      let title: string;
+      try {
+        title = (await deps.resolveTitle(s.thread_id)) ?? s.thread_id;
+      } catch {
+        // Thread deleted, or the lookup failed — show the id (SPEC surface 5).
+        title = s.thread_id;
+      }
+      return { ...s, title };
+    }),
+  );
+  const first = token.shares[0];
+  const url =
+    deps.rawToken !== undefined
+      ? buildShareUrl(deps.rawToken, {
+          workerOrigin: deps.workerOrigin,
+          firstThread: first
+            ? { project_id: first.project_id, thread_id: first.thread_id }
+            : undefined,
+        })
+      : undefined;
+  return { ...token, shares, url };
+}

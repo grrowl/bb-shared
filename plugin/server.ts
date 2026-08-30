@@ -12,11 +12,12 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   InMemoryStore,
-  buildShareUrl,
+  enrichToken,
   DuplicateShareError,
   ShareNotFoundError,
   TokenNotFoundError,
   type Store,
+  type Token as StoredToken,
 } from "./lib/token-store";
 import { registerAuthzRoute } from "./authz/authz";
 import {
@@ -47,6 +48,10 @@ export const shareSchema = z.object({
   project_id: z.string(),
   perm: permSchema,
   added_at: z.number(),
+  // Resolved thread title (issue 32). The server looks each shared thread's
+  // title up when it builds the token list and falls back to `thread_id` when
+  // the thread is gone, so share rows read as titles, not raw ids.
+  title: z.string(),
 });
 export type Share = z.output<typeof shareSchema>;
 
@@ -56,6 +61,11 @@ export const tokenSchema = z.object({
   label: z.string(),
   shares: z.array(shareSchema),
   created_at: z.number(),
+  // Session guest link (issue 32). Present while the raw token is still held in
+  // memory this session so Copy link keeps working; the raw token itself never
+  // crosses this boundary and is never persisted. Every listed token is from
+  // this session, so in practice this is always set.
+  url: z.string().optional(),
 });
 export type Token = z.output<typeof tokenSchema>;
 
@@ -232,6 +242,30 @@ export default async function plugin(bb: BbPluginApi) {
   // (SPEC §"Data model (in-memory only)"), guest URLs die with them.
   const store: Store = new InMemoryStore();
 
+  // Raw guest tokens, held in memory ONLY for the session (issue 32, SPEC
+  // surface 4) so Copy link keeps working after mint. Never persisted — not to
+  // disk, not to bb.storage.kv — so it dies with the plugin exactly like the
+  // HMAC key that would let it match. Keyed by the public token id.
+  const rawTokenById = new Map<string, string>();
+
+  // Resolve a thread's display title for the token list (issue 32, surface 5).
+  // Returns null when the thread has no title yet; enrichToken falls the id
+  // through when the thread is gone (get throws) or stays untitled.
+  const resolveTitle = async (threadId: string): Promise<string | null> => {
+    const thread = await bb.sdk.threads.get({ threadId });
+    return thread.title ?? thread.titleFallback ?? null;
+  };
+
+  // Project a stored token onto its wire shape (title per share + session URL),
+  // reusing the raw-token cache and the live worker origin. One code path for
+  // mintToken and listTokens keeps their URLs identical.
+  const toWireToken = (t: StoredToken) =>
+    enrichToken(t, {
+      rawToken: rawTokenById.get(t.id),
+      workerOrigin: lifecycle.currentWorkerUrl() ?? undefined,
+      resolveTitle,
+    });
+
   // Authoritative authz endpoint the CF worker pulls per guest request
   // (issue 06). Token-authed; consumes the same in-memory store.
   registerAuthzRoute(bb, store);
@@ -342,6 +376,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     async mintToken(input) {
       let { token, rawToken } = await store.mintToken({ label: input.label });
+      // Hold the raw token in memory for the session (issue 32) so listTokens
+      // can rebuild its URL for Copy link. Never persisted.
+      rawTokenById.set(token.id, rawToken);
       // Attach the requesting thread in the same call (when given) so the
       // returned link deep-links straight to it. Without a share the link
       // resolves nowhere for a guest.
@@ -364,22 +401,18 @@ export default async function plugin(bb: BbPluginApi) {
       // `<worker-pending>` placeholder and the owner UI badges it until the
       // health loop brings a worker up.
       await lifecycle.ensureDeployed();
-      const workerOrigin = lifecycle.currentWorkerUrl() ?? undefined;
-      const url = buildShareUrl(rawToken, {
-        workerOrigin,
-        firstThread: input.firstThread
-          ? {
-              project_id: input.firstThread.project_id,
-              thread_id: input.firstThread.thread_id,
-            }
-          : undefined,
-      });
+      // enrichToken deep-links to shares[0] (the firstThread just attached) and
+      // builds the URL from the same cached raw token, so `url` here equals the
+      // one a later listTokens returns for this token.
+      const wire = await toWireToken(token);
       emitTokensChanged();
-      return { token, url };
+      // The raw token was just cached, so enrichToken always set `wire.url`.
+      return { token: wire, url: wire.url! };
     },
 
     async listTokens() {
-      const tokens = await store.listTokens();
+      const stored = await store.listTokens();
+      const tokens = await Promise.all(stored.map(toWireToken));
       return { tokens };
     },
 
@@ -399,6 +432,8 @@ export default async function plugin(bb: BbPluginApi) {
       } catch (err) {
         throw mapStoreError(err);
       }
+      // Drop the cached raw token with the record (issue 32).
+      rawTokenById.delete(input.id);
       emitTokensChanged();
       return { ok: true as const };
     },

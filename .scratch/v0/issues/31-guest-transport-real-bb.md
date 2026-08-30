@@ -38,19 +38,53 @@ Fix: worker `buildAuthzRequest` now sends `x-bb-plugin-token`. (commit 31e145d)
   is now treated as stale and redeployed, so the rename + fixed bundle roll out
   instead of the old worker being reused forever. (31e145d)
 
+## Live walk #1 (2026-08-30) — guest loads; 3 more gaps found + fixed
+
+First real guest load worked: the guest sees only the shared thread. An authz
+trace (temporary, since removed) revealed three more denied boot requests, all
+now allowlisted (commit 90761e4):
+
+- `GET /ws` was classified invalid → the live-updates socket upgrade denied (no
+  streaming messages). Allowlisted; ws-frame-filter still scopes frames;
+  `/ws/terminals/*` stays denied.
+- `GET /system/providers` + `/system/execution-options` denied → the "could not
+  load models" error. Allowlisted read-only (payloads are provider/model UI
+  config, no secrets).
+- `GET /system/version` allowlisted (harmless).
+
+Verified live through the deployed worker with a real (self-minted, write) token:
+`?token=`→302, shell→200, assets→200, models→200, timeline→200, `/ws`→**101**
+(HTTP/1.1; an HTTP/2 curl shows 200 because HTTP/2 doesn't use the Upgrade
+header — not a bug). Outbound frame filter forwards an in-scope `changed/thread`
+frame, so live message events reach the guest by design.
+
+Send: `POST /threads/{t}/send` works for a **write** share; a **read** share
+correctly blocks it (the "scope" toast). Hiding the composer for a read guest is
+surface-6 UX, not a transport bug.
+
+Minor, left denied (non-blocking): `POST /threads/resolve-mentions` (mention
+autocomplete), `GET /environments/{id}/status|pull-request` (env status in the
+thread header). Revisit if the guest UI needs them.
+
 ## Outstanding — the live validation gap
 
-The end-to-end guest walk against a real bb has NOT passed yet. Each fix reload
-killed the in-memory test token, so the full chain was never observed working.
-To close:
+The transport chain is now verified by curl (above). What remains is a VISUAL
+browser confirmation — that the SPA renders, the model picker populates, and a
+new message streams in live — plus the read-guest composer UX.
 
-1. Mint a fresh link (no reloads after).
-2. Curl the whole boot through the deployed worker with a cookie jar: `?token=`
-   entry → 302, SPA shell at the thread path → 200, an `/assets/*` file → 200.
-3. Load it in a browser and watch the network tab for any GET boot endpoint the
-   authz allowlist still misses (e.g. project/thread detail calls beyond
-   `/system/config` + `/sidebar-bootstrap`). Allowlist any that are guest-safe.
-4. Then walk `docs/e2e-runbook.md`'s guest half for real and record it.
+1. Load the guest link in a real browser; confirm render + models + a live
+   message appearing without reload. (Could not automate this run: the
+   computer-use/orca binary was uninstalled, so no browser driver was
+   available.)
+2. Surface-6 UX: hide the composer for a read-only guest (the share perm is in
+   the token; the shim can carry it) so a read guest never types into a
+   dead-end "scope" error.
+3. Walk `docs/e2e-runbook.md`'s guest half for real and record it.
+
+Runtime note: heavy autonomous curl/WS testing tripped CF edge rate-limiting
+(HTTP 429) on the temp worker's tunnel dial. Transient — clears on CF's window
+or when the temp worker expires and the plugin redeploys a fresh account. Not a
+code issue.
 
 ## Follow-up
 

@@ -19,13 +19,11 @@ can grant read-only or write access per thread.
 Requirements: a current bb installation and Node.js 20 or later.
 
 ```sh
-git clone https://github.com/grrowl/bb-shared.git
-cd bb-shared
-npm install
-(cd worker && npm install)
-bb plugin build plugin
-bb plugin install path:"$PWD/plugin" --yes
+bb plugin install https://github.com/grrowl/bb-shared --yes
 ```
+
+bb clones the repository, installs the dependencies, and builds the plugin for
+you.
 
 Open a thread in bb and select **Share this thread**. The first new link
 creates a temporary Cloudflare Worker. Use **Shared threads** in the sidebar to
@@ -58,11 +56,24 @@ you would not want a link recipient to read.
 
 ## Development
 
+The repository root is the plugin, so a local checkout installs from its own
+directory.
+
 ```sh
-npm exec --workspace=bb-plugin-shared -- tsc -p tsconfig.json --noEmit
-npm exec --workspace=bb-plugin-shared -- vitest run
+git clone https://github.com/grrowl/bb-shared.git
+cd bb-shared
+npm install
+(cd worker && npm install)
+bb plugin install path:"$PWD" --yes
+```
+
+Then, to check and rebuild a change:
+
+```sh
+npm run typecheck
+npm test
 (cd worker && npm run typecheck && npm test)
-bb plugin build plugin
+bb plugin build .
 bb plugin reload shared
 ```
 

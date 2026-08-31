@@ -50,9 +50,9 @@ function page(heading: string, description: string): string {
 </html>`;
 }
 
-function htmlResponse(heading: string, description: string): Response {
+function htmlResponse(status: number, heading: string, description: string): Response {
   return new Response(page(heading, description), {
-    status: 404,
+    status,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
@@ -62,14 +62,14 @@ function htmlResponse(heading: string, description: string): Response {
 
 /** A link was revoked or no longer grants access to the requested thread. */
 export function sharedThreadNotFoundPage(): Response {
-  return htmlResponse("Not found",
+  return htmlResponse(404, "Not found",
     "This shared thread is no longer available. Ask the person who shared it with you for a new link.",
   );
 }
 
 /** A bare worker URL was opened without a shared link. */
 export function sharedLinkRequiredPage(): Response {
-  return htmlResponse("Not authenticated",
+  return htmlResponse(401, "Not authenticated",
     "This worker only opens shared bb threads. Ask the person who shared it with you for a link.",
   );
 }

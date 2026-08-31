@@ -5,26 +5,26 @@ state, Cloudflare Worker lifecycle, and the local half of the guest tunnel.
 
 ## Development
 
-Install dependencies from the repository root, then build and install the
-plugin as a local source:
+The plugin manifest lives in the repository root `package.json`, and these
+sources are what it points at. Run everything from the repository root:
 
 ```sh
 npm install
-bb plugin build plugin
-bb plugin install path:"$PWD/plugin" --yes
+bb plugin build .
+bb plugin install path:"$PWD" --yes
 ```
 
 For iterative work:
 
 ```sh
-bb plugin dev plugin
+bb plugin dev .
 ```
 
 Run its checks with:
 
 ```sh
-npm exec --workspace=bb-plugin-shared -- tsc -p tsconfig.json --noEmit
-npm exec --workspace=bb-plugin-shared -- vitest run
+npm run typecheck
+npm test
 ```
 
 ## Key boundaries

@@ -1,178 +1,107 @@
-// Persisted worker state (issue 07) — the ONE narrow exception to v0's
-// "no persistence" stance (SPEC §"Worker lifecycle"). Tokens stay in-memory;
-// only the worker deployment record survives a plugin restart, so a
-// still-healthy worker can be re-attached without a redeploy.
-//
-// Stored in bb's per-plugin durable KV (`bb.storage.kv`) — namespaced to this
-// plugin, backed by bb.db. The SPEC calls this "PluginSettings"; `bb.storage.kv`
-// is the concrete durable-storage surface the SDK exposes for it.
-//
-// SECRETS: `apiToken` (CF temp-account bearer), `tunnelSecret` (our handshake
-// secret), and `claim.url` (owner-only claim bearer) all live in this record.
-// They are persisted locally only, never logged, and never returned to the
-// frontend or guests (see getWorkerStatus, which projects a redacted subset).
-//
-// AT REST (issue 29): when a `KeyProvider` is supplied, these SECRET fields are
-// encrypted with a device-tied key before they touch `bb.storage.kv`
-// (AES-256-GCM per field, see `../lib/device-key`). The non-secret metadata
-// stays plaintext and readable. A record that fails to decrypt (missing key,
-// other machine, tamper) is wiped and treated as absent — the same degrade-to-
-// fresh-bootstrap path as a malformed blob. Without a KeyProvider the store
-// falls back to the legacy plaintext behaviour (used by unit tests that do not
-// exercise encryption).
 import { z } from "zod";
-import {
-  decryptRecord,
-  encryptRecord,
-  SecretEnvelopeError,
-  type KeyProvider,
-  type SecretFieldPath,
-} from "../lib/device-key";
+import { decryptRecord, encryptRecord, SecretEnvelopeError, type KeyProvider, type SecretFieldPath } from "../lib/device-key";
 
-/** KV key the worker record lives under. */
+/** The only durable lifecycle record. It intentionally contains no CF API credential. */
 export const WORKER_RECORD_KEY = "worker-record";
+/** Legacy OAuth state, read exactly once during migration. */
+export const OAUTH_RECORD_KEY = "oauth-worker-record";
+export const WORKER_RECORD_SECRET_FIELDS: readonly SecretFieldPath[] = ["url", "tunnelSecret", "claim.url"];
 
-/**
- * Secret fields (dot-paths) encrypted at rest by issue 29. Everything else in
- * the record is non-secret metadata and stays plaintext. `claim.url` is nested
- * and nullable; the crypto layer skips it when `claim` is null.
- */
-export const WORKER_RECORD_SECRET_FIELDS: readonly SecretFieldPath[] = [
-  "apiToken",
-  "tunnelSecret",
-  "claim.url",
-];
+const workerUrl = z.string().refine(isExpectedWorkerUrl, "expected bb-shared workers.dev origin");
+const tunnelSecret = z.string().regex(/^[A-Za-z0-9_-]{32,}$/, "expected a base64url tunnel secret");
+const claimUrl = z.string().refine(isClaimUrl, "expected Cloudflare claim URL");
 
 export const workerRecordSchema = z.object({
-  /** CF deployment/script identifier for this generation. */
-  deploymentId: z.string(),
-  /** Deployed worker URL, e.g. `https://bb-shared.<sub>.workers.dev`. */
-  url: z.string(),
-  /** CF temp account id (needed for SDK calls against this account). */
-  accountId: z.string(),
-  /** CF temp-account bearer. SECRET. */
-  apiToken: z.string(),
-  /** Account self-destruct time (ms epoch) or null if CF omitted it. */
-  expiresAt: z.number().nullable(),
-  /** Handshake bearer for the local SharedTunnel dial. SECRET. */
-  tunnelSecret: z.string(),
-  /** Owner-only CF claim affordance. `url` is a bearer — never to guests/logs. */
-  claim: z
-    .object({ url: z.string(), expiresAt: z.number().nullable() })
-    .nullable(),
-  /** When this record was written (ms epoch). */
-  deployedAt: z.number(),
-  /** Monotonic deploy generation; bumped on every (re)deploy. */
-  generation: z.number(),
-});
-
+  deploymentId: z.string(), url: workerUrl, tunnelSecret,
+  claim: z.object({ url: claimUrl, expiresAt: z.number().nullable() }).nullable(),
+  deployedAt: z.number(), generation: z.number(),
+}).strict();
 export type WorkerRecord = z.infer<typeof workerRecordSchema>;
 
-/** Minimal structural subset of `bb.storage.kv` we depend on (testable). */
-export interface RecordKv {
-  get<T>(key: string): Promise<T | undefined>;
-  set(key: string, value: unknown): Promise<void>;
-  delete(key: string): Promise<void>;
-}
-
+export interface RecordKv { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void>; }
 export interface WorkerRecordStore {
   load(): Promise<WorkerRecord | null>;
+  /** True for a malformed, unreadable, or legacy record which must not be replaced automatically. */
+  requiresRecovery(): Promise<boolean>;
   save(record: WorkerRecord): Promise<void>;
   clear(): Promise<void>;
 }
+export interface WorkerRecordStoreOptions { keyProvider?: KeyProvider; log?: { warn?(msg: string, meta?: unknown): void; info?(msg: string, meta?: unknown): void }; }
 
-/** Options for {@link createWorkerRecordStore}. */
-export interface WorkerRecordStoreOptions {
-  /**
-   * Device-tied key source (issue 29). When present, secret fields are
-   * encrypted on save and decrypted on load; a legacy plaintext record is
-   * transparently re-saved encrypted on first load. When absent, the store
-   * reads/writes plaintext (legacy behaviour).
-   */
-  keyProvider?: KeyProvider;
-  /** Optional logger for at-rest diagnostics (never logs secret material). */
-  log?: {
-    warn?(msg: string, meta?: unknown): void;
-    info?(msg: string, meta?: unknown): void;
-  };
+/** A workers.dev origin which can safely receive the tunnel bearer. */
+export function isExpectedWorkerUrl(value: string): boolean {
+  try {
+    const u = new URL(value); const labels = u.hostname.toLowerCase().split(".");
+    return u.protocol === "https:" && !u.username && !u.password && !u.port && u.pathname === "/" && !u.search && !u.hash && labels[0] === "bb-shared" && labels.length >= 4 && labels.slice(-2).join(".") === "workers.dev";
+  } catch { return false; }
+}
+/** CF claim links are bearer URLs, so accept only the documented dashboard shape. */
+export function isClaimUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" && !u.username && !u.password && !u.port && u.hostname === "dash.cloudflare.com" && u.pathname === "/claim-preview" && u.searchParams.has("claimToken") && !u.hash;
+  } catch { return false; }
+}
+function legacyToRecord(value: unknown): WorkerRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const legacy = value as Record<string, unknown>;
+  const parsed = workerRecordSchema.safeParse({
+    deploymentId: typeof legacy.deploymentId === "string" ? legacy.deploymentId : "legacy-oauth",
+    url: legacy.lastKnownUrl, tunnelSecret: legacy.tunnelSecret, claim: null,
+    deployedAt: typeof legacy.deployedAt === "number" ? legacy.deployedAt : Date.now(),
+    generation: typeof legacy.generation === "number" ? legacy.generation : 0,
+  });
+  return parsed.success ? parsed.data : null;
 }
 
-/**
- * KV-backed record store. `load` validates the stored blob and treats a
- * malformed record — or one whose secret fields cannot be decrypted (issue 29:
- * missing key, other machine, tamper) — as absent, wiping it, so it degrades to
- * a fresh bootstrap rather than a crash.
- *
- * When a `keyProvider` is supplied, the SECRET fields
- * ({@link WORKER_RECORD_SECRET_FIELDS}) are encrypted at rest with a device-tied
- * key; non-secret metadata stays plaintext. A pre-encryption plaintext record
- * is read once and re-saved encrypted (migration), after which the plaintext is
- * gone from the kv.
- */
-export function createWorkerRecordStore(
-  kv: RecordKv,
-  options: WorkerRecordStoreOptions = {},
-): WorkerRecordStore {
-  const { keyProvider, log } = options;
-
+export function createWorkerRecordStore(kv: RecordKv, options: WorkerRecordStoreOptions = {}): WorkerRecordStore {
+  const { keyProvider, log } = options; let recoveryRequired = false;
+  const encode = async (record: WorkerRecord) => keyProvider ? encryptRecord(record, await keyProvider.getKey(), WORKER_RECORD_SECRET_FIELDS) : record;
+  const decode = async (raw: unknown): Promise<{ record: WorkerRecord | null; migrated: boolean }> => {
+    let value = raw; let migrated = false;
+    if (keyProvider) try {
+      const dec = decryptRecord(raw, await keyProvider.getKey(), WORKER_RECORD_SECRET_FIELDS); value = dec.record; migrated = dec.migrated;
+    } catch (err) {
+      if (err instanceof SecretEnvelopeError) { recoveryRequired = true; log?.warn?.("bb-shared: preserving unreadable worker record; manual recovery is required"); return { record: null, migrated: false }; }
+      throw err;
+    }
+    // v0 records included temporary account credentials. Strip them during the
+    // one-way migration before validation and re-save below, physically
+    // removing encrypted apiToken bytes from durable storage.
+    if (value && typeof value === "object" && ("apiToken" in value || "accountId" in value || "expiresAt" in value)) {
+      const old = value as Record<string, unknown>;
+      value = { deploymentId: old.deploymentId, url: old.url, tunnelSecret: old.tunnelSecret, claim: old.claim, deployedAt: old.deployedAt, generation: old.generation };
+      migrated = true;
+    }
+    const parsed = workerRecordSchema.safeParse(value);
+    if (!parsed.success) { recoveryRequired = true; log?.warn?.("bb-shared: preserving malformed worker record; manual recovery is required"); return { record: null, migrated: false }; }
+    return { record: parsed.data, migrated };
+  };
   return {
     async load() {
+      recoveryRequired = false;
       const raw = await kv.get<unknown>(WORKER_RECORD_KEY);
-      if (raw === undefined || raw === null) return null;
-
-      let candidate: unknown = raw;
-      let migrated = false;
-      if (keyProvider) {
-        try {
-          const key = await keyProvider.getKey();
-          const dec = decryptRecord(raw, key, WORKER_RECORD_SECRET_FIELDS);
-          candidate = dec.record;
-          migrated = dec.migrated;
-        } catch (err) {
-          // Undecryptable secret: wrong key / other machine / tamper. Wipe and
-          // degrade to fresh bootstrap — never crash (issue 29).
-          if (err instanceof SecretEnvelopeError) {
-            log?.warn?.(
-              "bb-shared: worker record could not be decrypted; wiping and re-bootstrapping",
-            );
-            await kv.delete(WORKER_RECORD_KEY);
-            return null;
-          }
-          throw err; // a key-provider outage is not a corrupt-record signal
-        }
+      if (raw !== undefined && raw !== null) {
+        const decoded = await decode(raw); if (decoded.record && decoded.migrated) await this.save(decoded.record); return decoded.record;
       }
-
-      const parsed = workerRecordSchema.safeParse(candidate);
-      if (!parsed.success) {
-        await kv.delete(WORKER_RECORD_KEY);
-        return null;
+      let legacy = await kv.get<unknown>(OAUTH_RECORD_KEY);
+      if (legacy === undefined || legacy === null) return null;
+      // The removed OAuth record encrypted tunnelSecret but left lastKnownUrl
+      // plaintext. Read just that minimal shape; never revive a refresh grant.
+      if (keyProvider) try {
+        legacy = decryptRecord(legacy, await keyProvider.getKey(), ["tunnelSecret"]).record;
+      } catch (err) {
+        if (err instanceof SecretEnvelopeError) { recoveryRequired = true; log?.warn?.("bb-shared: preserving unreadable legacy OAuth record; manual recovery is required"); return null; }
+        throw err;
       }
-
-      // Legacy plaintext record with a key available: re-save encrypted so the
-      // plaintext falls out of the kv.
-      if (keyProvider && migrated) {
-        log?.info?.(
-          "bb-shared: migrating plaintext worker record to encrypted at-rest storage",
-        );
-        await this.save(parsed.data);
-      }
-      return parsed.data;
+      const migrated = legacyToRecord(legacy);
+      if (!migrated) { recoveryRequired = true; log?.warn?.("bb-shared: preserving unusable legacy OAuth record; manual recovery is required"); return null; }
+      await this.save(migrated); await kv.delete(OAUTH_RECORD_KEY);
+      log?.info?.("bb-shared: migrated legacy OAuth worker endpoint and purged OAuth credentials");
+      return migrated;
     },
-    async save(record) {
-      if (keyProvider) {
-        const key = await keyProvider.getKey();
-        const atRest = encryptRecord(
-          record,
-          key,
-          WORKER_RECORD_SECRET_FIELDS,
-        );
-        await kv.set(WORKER_RECORD_KEY, atRest);
-        return;
-      }
-      await kv.set(WORKER_RECORD_KEY, record);
-    },
-    async clear() {
-      await kv.delete(WORKER_RECORD_KEY);
-    },
+    async requiresRecovery() { return recoveryRequired; },
+    async save(record) { await kv.set(WORKER_RECORD_KEY, await encode(workerRecordSchema.parse(record))); },
+    async clear() { await kv.delete(WORKER_RECORD_KEY); recoveryRequired = false; },
   };
 }

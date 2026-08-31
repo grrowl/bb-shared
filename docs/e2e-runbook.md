@@ -161,10 +161,8 @@ deploy (no CF egress in the build sandbox).
 
 ### Status / expected artifacts
 
-- **`getWorkerStatus` RPC** returns
-  `{ url?, state, expiresAt?, claim?: { url, expiresAt }, healthy, tunnel? }`
-  (issue 07). `apiToken` and `tunnelSecret` are **redacted** — they never cross
-  the RPC boundary.
+- **`getWorkerStatus` RPC** returns `{ url?, state, healthy, tunnel?, fault? }`.
+  Provisioning `apiToken` and the tunnel secret never cross the RPC boundary.
 - **Nav-panel worker-status pill** (issue 16) renders this: "Worker not
   deployed" before first mint, healthy/unhealthy once live, "unreachable" on a
   non-stub rejection. It also live-refreshes on the `worker-changed` realtime
@@ -179,10 +177,12 @@ deploy (no CF egress in the build sandbox).
 
 ### Health / liveness
 
-`GET https://<worker>/` returns **`401 { "error": "token_missing" }`** when the
-worker is alive — that is the cheapest liveness probe (issue 08). The plugin
-health-checks every 60s while any token is live; on failure it wipes the KV
-record and bootstraps a fresh deploy (new URL — old guest URLs die).
+`GET https://<worker>/` must return exactly **`401 { "error": "token_missing" }`**
+to identify a live worker; a Cloudflare 404 HTML page is not healthy. The plugin
+checks saved workers periodically even without shares. Failure retains the
+record as **Offline** and retries; it never creates a replacement automatically.
+Only the owner-only **Recreate worker** action provisions a new endpoint. A new
+hostname means previously copied links continue to target the old worker.
 
 ---
 
@@ -410,10 +410,10 @@ and the failure indicator.
 |---|---|---|
 | **Every guest request 403**, even a plain thread view with a valid `write` token | Plugin-id mismatch — the worker's authz URL doesn't match the plugin's mount id `shared`, so authz is unreachable and the gate fails **closed**. Ticket 22 aligned both to `shared`; a regression would reintroduce this | Run `bb plugin list` for the real id (expect `shared`); curl the authz route at `.../plugins/shared/http/authz` with `Bearer $(bb plugin token shared)` — a 200 confirms the mount. Confirm the worker's `AUTHZ_ENDPOINT_PATH` uses the same id. |
 | First **mint hangs or errors** | No CF egress, or PoW/provision failure | Confirm reachability to `api.cloudflare.com`; watch `bb plugin logs shared` for the provision/upload error; `getWorkerStatus` pill shows the error state. |
-| Worker was live, now **all guests 503** with `x-bb-tunnel-offline: 1` | `SharedTunnel` not connected to `/__tunnel` (dropped, or secret mismatch) | Check the tunnel status in `getWorkerStatus.tunnel`; a `401/403` on dial means `TUNNEL_SECRET` drift between KV and the deployed worker — the lifecycle rotates the secret on redeploy, so a stale worker won't match. Redeploy. |
+| Worker was live, now **all guests 503** with `x-bb-tunnel-offline: 1` | `SharedTunnel` not connected to `/__tunnel` (dropped, or secret mismatch) | Check `getWorkerStatus.tunnel`; `stopped` is actionable. Repair the local tunnel first. Use **Recreate worker** only when deliberately replacing the worker. |
 | **Guest chrome still shows** Settings / Extensions / New-thread | Chrome shim didn't inject | Confirm the guest response is `text/html` and `<html>` carries `data-bb-guest="1"`; if a bb upgrade moved a selector, run `node scripts/check-chrome-selectors.mjs <bb>/apps/app/dist` — a MISSING probe means the selector drifted and must be re-pinned (bump `BB_VERSION`). |
 | **Guest sidebar shows extra threads/projects** | Response filter or authz scope wrong | Inspect the guest's `sidebar-bootstrap` response; confirm authz returns the right `thread_scope`/`project_scope` for the token (issue 19 added `project_scope`). |
-| Worker **vanished after ~1h**, guest URLs dead | 60-min unclaimed TTL elapsed | Expected. Re-mint (redeploys → new URL) and reshare, or claim the worker via the nav-panel `claim.url` to make it durable. |
+| Worker **Offline** after a temporary-account failure | The saved endpoint no longer answers the exact worker identity probe | The record is retained and periodically retried. If recovery is not expected, use **Recreate worker** and tell users copied links still point to the old hostname. |
 | Guest **send silently does nothing** on a `write` thread | Send blocked upstream | Check the network tab for `403 { error: "scope" }` — if present, the share is `read` not `write`, or authz denied (re-check plugin-id drift). |
 | **`getWorkerStatus` shows "not deployed"** after a mint | Lifecycle stub or deploy never ran | If `mintToken` didn't await `ensureDeployed()` (or errored before it), no deploy happened — check logs. Note: opening the share popover alone does **not** deploy (drift note under "Deploy worker"). |
 

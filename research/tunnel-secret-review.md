@@ -276,7 +276,7 @@ from "eavesdrop" to "own the guest session": serve attacker content to guests
 secret-confidentiality finding above and is the reason H1/M2/M3 matter more than
 their individual mechanics suggest. For v0 under local-trust it's acceptable, but
 the design should state that the tunnel secret is a *takeover* credential, not
-just an auth token, so future work (v2 claim/OAuth) treats it accordingly.
+just an auth token, so any future lifecycle work treats it accordingly.
 
 ---
 

@@ -29,7 +29,6 @@
     "hooks",
     "share-popover",
     "nav-panel",
-    "worker-lifecycle",
-    "cf-oauth"
+    "worker-lifecycle"
   ]
 }

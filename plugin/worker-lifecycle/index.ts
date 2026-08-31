@@ -5,8 +5,6 @@ export {
   type WorkerLifecycleDeps,
   type WorkerState,
   type WorkerStatus,
-  type ConnectionState,
-  type ConnectionStatus,
   type TunnelLike,
 } from "./worker-lifecycle";
 export {

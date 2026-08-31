@@ -63,27 +63,19 @@ curl -sS -X POST http://127.0.0.1:38886/api/v1/plugins/shared/rpc/listTokens \
 If the plugin loaded and RPC is registered, that "not implemented" reply is
 the success signal for issue 04.
 
-## Cloudflare OAuth (issue 28)
+## Cloudflare worker lifecycle
 
-Once a worker is deployed, the owner can connect their real Cloudflare account
-by OAuth so a **claimed** worker is reused across restarts and managed from the
-API (redeploy/undeploy). OAuth is the source of truth for claim state and the
-worker's live hostname. See `cf-oauth/` and `../.scratch/v0/issues/28-*.md`.
+bb-shared never authorizes or manages a user's Cloudflare account. The owner can
+open the owner-only claim link; Cloudflare transfers the whole temporary account
+and preserves the worker's `workers.dev` hostname. bb-shared cannot observe or
+confirm that action.
 
-**One-time setup — the `client_id` is a plugin setting, not hardcoded.**
-
-1. Register a **public PKCE OAuth client** once (see the exact `curl` in
-   ticket 28). It returns a `client_id` and no secret.
-2. Paste it into the plugin setting **"Cloudflare OAuth client id"**
-   (`cfOauthClientId`), then `bb plugin reload shared`.
-3. The **"Cloudflare OAuth callback port"** setting (`cfOauthCallbackPort`,
-   default `8977`) MUST match the port in the client's registered
-   `redirect_uris` — Cloudflare matches redirect URIs exactly, so the loopback
-   port is fixed, not flexible. The owner's browser must run on the same machine
-   as the bb server.
-
-Until a `client_id` is configured, "Connect Cloudflare" returns a clear
-"not configured" error and the unclaimed temp-worker flow is unaffected.
+The saved endpoint is reused whenever the exact worker probe returns `401`
+`{ "error": "token_missing" }`, even after the temporary claim TTL. A failed
+probe is **Offline**, not a reason to discard or replace the record: it is
+checked again periodically, including with no shares. **Recreate worker** is the
+only replacement action. It creates a new hostname; existing copied links still
+target the old worker, which Cloudflare does not delete automatically.
 
 ## Notes for downstream issues
 
@@ -92,7 +84,7 @@ Until a `client_id` is configured, "Connect Cloudflare" returns a clear
   plugin uses camelCase; pick one and stick with it.
 - **Realtime channels**: `REALTIME_CHANNELS` in `lib/realtime-channels.ts`
   names the channels the frontend subscribes to (`tokens-changed`,
-  `worker-changed`, `connection-changed`). Publish from wherever the mutation
+  `worker-changed`). Publish from wherever the mutation
   happens.
 - **In-memory state**: SPEC.md §"Data model" is explicit — no SQLite in v0.
   Use a plain `Map<string, Token>` in the factory closure; state dies on

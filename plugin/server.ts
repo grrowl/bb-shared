@@ -24,14 +24,7 @@ import {
   WorkerLifecycle,
   bundleWorker,
   createWorkerRecordStore,
-  type ConnectionStatus,
 } from "./worker-lifecycle";
-import {
-  createOAuthRecordStore,
-  OAuthClient,
-  probeTunnelSecret,
-  DEFAULT_OAUTH_CALLBACK_PORT,
-} from "./cf-oauth";
 import { createDeviceKeyProvider } from "./lib/device-key";
 import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
@@ -73,8 +66,8 @@ export const tokenSchema = z.object({
 export type Token = z.output<typeof tokenSchema>;
 
 // getWorkerStatus payload (issue 07). `url` is surfaced to the owner UI; the
-// worker's apiToken + tunnelSecret never cross this boundary. `state` drives
-// the deploy/redeploy/health UI; `expiresAt` drives the CF claim countdown.
+// worker's provisioning API token + tunnelSecret never cross this boundary.
+// `state` drives the online/offline and explicit-recreate UI.
 //
 // H1 (ticket 20): the CF `claim.url` account-takeover bearer is NOT in this
 // payload — it rode both this RPC and the worker-changed broadcast. The claim
@@ -82,8 +75,7 @@ export type Token = z.output<typeof tokenSchema>;
 // which the worker denies to guests (M2); it never appears on a broadcast.
 export const workerStatusSchema = z.object({
   url: z.string().optional(),
-  state: z.enum(["idle", "deploying", "live", "unhealthy", "error"]),
-  expiresAt: z.number().optional(),
+  state: z.enum(["idle", "deploying", "live", "offline"]),
   healthy: z.boolean(),
   tunnel: z
     .enum([
@@ -94,6 +86,7 @@ export const workerStatusSchema = z.object({
       "stopped",
     ])
     .optional(),
+  fault: z.string().optional(),
 });
 export type WorkerStatus = z.output<typeof workerStatusSchema>;
 
@@ -108,23 +101,6 @@ export const claimUrlSchema = z.object({
 });
 export type ClaimUrlResult = z.output<typeof claimUrlSchema>;
 
-// getConnectionStatus payload (issue 28). A REDACTED projection: the account id
-// and LIVE hostname are surfaced to the owner UI; the OAuth refresh/access
-// tokens NEVER cross this boundary (they live encrypted at rest + in memory).
-export const connectionStatusSchema = z.object({
-  connection: z.enum(["not-connected", "connecting", "connected"]),
-  claimed: z.boolean(),
-  accountId: z.string().optional(),
-  hostname: z.string().optional(),
-  writeGranted: z.boolean().optional(),
-});
-export type ConnectionStatusResult = z.output<typeof connectionStatusSchema>;
-
-// connectCloudflare payload: the authorize URL the frontend opens in the
-// owner's browser. The code exchange + discovery finish in the background; the
-// UI tracks the result via getConnectionStatus / the connection-changed channel.
-export const connectResultSchema = z.object({ authorizeUrl: z.string() });
-export type ConnectResult = z.output<typeof connectResultSchema>;
 
 // void-returning methods use { ok: true } as their wire payload — zod has no
 // clean "no result" primitive for the strict-JSON envelope, and this matches
@@ -197,24 +173,7 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: claimUrlSchema,
   },
-  // Cloudflare OAuth (issue 28).
-  getConnectionStatus: {
-    input: z.null(),
-    output: connectionStatusSchema,
-  },
-  connectCloudflare: {
-    input: z.null(),
-    output: connectResultSchema,
-  },
-  disconnectCloudflare: {
-    input: z.null(),
-    output: okSchema,
-  },
-  redeployClaimedWorker: {
-    input: z.null(),
-    output: okSchema,
-  },
-  undeployClaimedWorker: {
+  recreateWorker: {
     input: z.null(),
     output: okSchema,
   },
@@ -295,61 +254,11 @@ export default async function plugin(bb: BbPluginApi) {
     log: bb.log,
   });
 
-  // Cloudflare OAuth configuration (issue 28). The `client_id` is CONFIGURABLE,
-  // not hardcoded — grrowl's public OAuth client is registered once by the owner
-  // (see the ticket's registration curl) and its id pasted here. Empty until
-  // then, in which case Connect surfaces a clear "not configured" error. The
-  // callback port is fixed (CF matches redirect_uris exactly) and exposed so the
-  // registered redirect URI and the listener always agree.
-  const cfSettingsHandle = bb.settings.define({
-    cfOauthClientId: {
-      type: "string",
-      label: "Cloudflare OAuth client id",
-      description:
-        "The public OAuth client id registered for this plugin (see the plugin README). Leave blank to disable Cloudflare connect.",
-      default: "",
-    },
-    cfOauthCallbackPort: {
-      type: "string",
-      label: "Cloudflare OAuth callback port",
-      description:
-        "Loopback port for the OAuth redirect. Must match the port in the client's registered redirect URI (http://127.0.0.1:<port>/oauth/callback).",
-      default: String(DEFAULT_OAUTH_CALLBACK_PORT),
-    },
-  });
-  // Cache settings synchronously for the lifecycle's () => value accessors;
-  // refresh the cache on change (a reload is still needed for it to take full
-  // effect, per the SDK, but this keeps the cache honest within a load).
-  let cfSettings = await cfSettingsHandle.get();
-  cfSettingsHandle.onChange((next) => {
-    cfSettings = next;
-  });
-  const parseCallbackPort = (): number => {
-    const n = Number.parseInt(cfSettings.cfOauthCallbackPort ?? "", 10);
-    return Number.isFinite(n) && n > 0 && n < 65536
-      ? n
-      : DEFAULT_OAUTH_CALLBACK_PORT;
-  };
-
   const lifecycle = new WorkerLifecycle({
     recordStore: createWorkerRecordStore(bb.storage.kv, {
       keyProvider: deviceKeyProvider,
       log: bb.log,
     }),
-    // Cloudflare OAuth-claimed record (issue 28): a SEPARATE encrypted KV entry
-    // holding the rotating refresh token + claimed metadata (§11.5). Same
-    // device-tied key as the temp record.
-    oauthRecordStore: createOAuthRecordStore(bb.storage.kv, {
-      keyProvider: deviceKeyProvider,
-      log: bb.log,
-    }),
-    oauthClient: new OAuthClient(),
-    getOAuthClientId: () => cfSettings.cfOauthClientId ?? "",
-    getOAuthCallbackPort: parseCallbackPort,
-    tunnelProbe: probeTunnelSecret,
-    publishConnection: (status: ConnectionStatus) => {
-      bb.realtime.publish(REALTIME_CHANNELS.connectionChanged, status);
-    },
     log: bb.log,
     publishStatus: (status) => {
       bb.realtime.publish(REALTIME_CHANNELS.workerChanged, status);
@@ -361,7 +270,7 @@ export default async function plugin(bb: BbPluginApi) {
       const { token } = await bb.sdk.plugins.token({ pluginId: bb.pluginId });
       return token;
     },
-    // Health loop only runs while at least one guest token exists.
+    // Kept for API compatibility; lifecycle probes saved workers even without shares.
     hasTokens: async () => (await store.listTokens()).length > 0,
     bundleWorker: () => bundleWorker({ workerDir, log: bb.log }),
   });
@@ -487,36 +396,8 @@ export default async function plugin(bb: BbPluginApi) {
       return { claim: lifecycle.getClaimUrl() };
     },
 
-    // ---- Cloudflare OAuth (issue 28) ----
-
-    // Owner-only connection snapshot: account id + live hostname + write grant.
-    // Never carries the refresh/access token (those stay encrypted/in-memory).
-    getConnectionStatus(): ConnectionStatusResult {
-      return lifecycle.getConnectionStatus();
-    },
-
-    // Start the connect flow and return the authorize URL for the FRONTEND to
-    // open in the owner's browser (navigate.openUrl). The loopback listener runs
-    // on the bb server host; the owner's browser must be on the same machine
-    // (standard native-app OAuth). The exchange + discovery finish in the
-    // background and broadcast on the connection-changed channel.
-    async connectCloudflare(): Promise<ConnectResult> {
-      return lifecycle.beginCloudflareConnect();
-    },
-
-    async disconnectCloudflare() {
-      await lifecycle.disconnectCloudflare();
-      return { ok: true as const };
-    },
-
-    async redeployClaimedWorker() {
-      await lifecycle.redeployClaimedWorker();
-      emitTokensChanged();
-      return { ok: true as const };
-    },
-
-    async undeployClaimedWorker() {
-      await lifecycle.undeployClaimedWorker();
+    async recreateWorker() {
+      await lifecycle.recreateWorker();
       emitTokensChanged();
       return { ok: true as const };
     },

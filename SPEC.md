@@ -61,31 +61,22 @@ Three components:
   https://developers.cloudflare.com/workers/platform/claim-deployments/).
   Anonymous PoW-gated deploy; use the `cloudflare` npm SDK for uploads.
   **Always temp** — no wrangler dep, no branching, one code path.
-- **Persist worker state in bb's `PluginSettings`** (per-plugin
-  durable storage). Fields:
-  `{ deploymentId, url, apiToken, expiresAt, claim: { url, expiresAt } }`.
-  Survives plugin restart. This is the one narrow exception to v0's
-  "no persistence" stance — worker state only. Tokens stay
-  in-memory (guest URLs die on restart because tokens die).
-- **60-min TTL**: unclaimed temp accounts self-destruct after 60
-  minutes. Plugin flow:
-  - On start: read PluginSettings; if a worker record exists,
-    health-check it. Alive → reuse. Dead/missing/expired → wipe
-    settings and bootstrap fresh on next mint.
-  - Mid-session health-check failure: same — wipe + fresh.
-  - CF cleans up expired temp accounts automatically, so no orphans
-    to worry about on our side.
-- Owner UI surfaces the CF `claim.url` as an inline nudge to keep the
-  worker alive past 60 min. **v0 does NOT track claim state** — if the
-  user claims via OAuth, the worker keeps running until our `apiToken`
-  is revoked or account behavior changes; we notice via health check
-  and re-bootstrap fresh. v2 wraps claim in a proper OAuth flow that
-  captures the claimed account and continues managing under it.
-  `claim.url` is a bearer credential — never send to guests, never log.
-- Deployment URL held in plugin memory only. On plugin/app restart the
-  worker URL is discarded and a fresh one is deployed on next use.
-- Plugin pings its worker on panel open and periodically while any token
-  is live; redeploys if the worker is gone.
+- **Persist worker state in bb's durable KV** as
+  `{ deploymentId, url, tunnelSecret, claim, deployedAt, generation }`.
+  `url`, `tunnelSecret`, and `claim.url` are encrypted. The provisioning-only
+  temporary API token and account id are never persisted.
+- The temporary-account TTL is not lifecycle truth. The owner-only claim URL is
+  hidden after its expiry, but a saved endpoint is reused after restart whenever
+  its exact `401 { error: "token_missing" }` identity probe succeeds. Cloudflare
+  has been observed to preserve the workers.dev hostname after the owner claims.
+  bb-shared never claims to know whether the owner completed that action.
+- Any probe/startup/tick failure retains the record and marks it **Offline**;
+  periodic probes continue even with no shares. Connecting/reconnecting tunnels
+  do not replace a worker; a stopped tunnel is an actionable fault.
+- First share auto-provisions only with no record. **Recreate worker** is the
+  sole replacement operation and is transactional: the old record/tunnel remain
+  until new provisioning and durable save succeed. A new hostname leaves copied
+  links targeting the old worker, and Cloudflare cleanup is manual.
 
 ### Local tunnel client
 
@@ -335,7 +326,9 @@ redeploy, so the window is narrow and self-closing.
 
 **v1 candidates.** ~~Encrypt KV values with a device-tied key (macOS Keychain,
 etc.), prioritising `apiToken`~~ — **done (issue 29)**, see "At-rest encryption"
-above; add TLS-fingerprint pinning; wrap the CF claim in a proper OAuth flow.
+above; add TLS-fingerprint pinning. Cloudflare account OAuth is intentionally
+out of scope: bb-shared keeps a claimed endpoint only through exact health
+probes and never attempts to confirm a claim.
 
 ## Non-goals
 

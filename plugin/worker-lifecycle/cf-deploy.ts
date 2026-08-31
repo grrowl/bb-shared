@@ -261,12 +261,11 @@ async function uploadScript(
 /**
  * Upload the bundled worker to a specific account with a specific bearer, then
  * enable its workers.dev route and resolve the live URL. Extracted from the
- * temp-deploy path so the OAuth redeploy (issue 28 §11.4) can reuse the exact
- * ticket-30-fixed pipeline against the CLAIMED account with an OAuth access
- * token instead of the temp `apiToken`. Same raw multipart PUT (bug 3), same
+ * temporary deployment path. It is retained as the single provisioning upload
+ * helper. Same raw multipart PUT (bug 3), same
  * per-script subdomain enable (bug 4).
  *
- * NOTE (live-validation caveat, issue 28): the `migrations.new_sqlite_classes`
+ * NOTE: the `migrations.new_sqlite_classes`
  * metadata is a first-time DO migration. Re-uploading onto a claimed script
  * whose DO class already exists may need a bare (no-migration) or `new_tag`
  * bump instead; this cannot be exercised offline (no registered client) and is
@@ -275,7 +274,7 @@ async function uploadScript(
 export async function uploadWorkerScript(args: {
   input: DeployInput;
   accountId: string;
-  /** Temp-account apiToken OR an OAuth access token — both are Bearer creds. */
+  /** Temporary-account bearer used only during provisioning/upload. */
   bearer: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ url: string; deploymentId: string }> {

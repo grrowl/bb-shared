@@ -208,8 +208,7 @@ that limit — another reason to push the claim flow.
    its `*.workers.dev` URL stay stable** — the account underneath simply
    changes ownership.
 4. Post-claim, the plugin needs the owner's new account ID + a durable API
-   token (either paste one in from the CF dashboard, or use OAuth if we
-   later integrate CF's OAuth). Post-claim workflow is **out of scope for
+  token. Post-claim workflow is **out of scope for
    this spike** — it belongs to whichever ticket adds the "stable URL" story.
 
 There is no webhook or callback from CF telling us the account has been

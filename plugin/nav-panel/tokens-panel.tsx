@@ -32,6 +32,7 @@ import {
   Delete02Icon,
   PencilEdit02Icon,
   Share08Icon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 
 import { Button } from "../components/ui/button.js";
@@ -285,18 +286,36 @@ function ClaimWorkerNotice({ claimUrl }: { claimUrl: string | undefined }) {
       >
         Claim your worker
       </button>
-      <span aria-hidden> · </span>
-      <button
-        type="button"
-        onClick={() => void copyClaimUrl()}
-        className="font-semibold text-foreground underline underline-offset-2 hover:text-foreground/80"
+      <span
+        className="inline-flex align-middle"
+        title={
+          copyState === "copied"
+            ? "Claim URL copied"
+            : copyState === "failed"
+              ? "Couldn’t copy claim URL"
+              : "Copy claim URL"
+        }
       >
-        {copyState === "copied"
-          ? "Copied"
-          : copyState === "failed"
-            ? "Couldn’t copy"
-            : "Copy URL"}
-      </button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => void copyClaimUrl()}
+          className="ml-0.5 size-5 text-muted-foreground hover:text-foreground"
+          aria-label={
+            copyState === "copied"
+              ? "Claim URL copied"
+              : copyState === "failed"
+                ? "Couldn’t copy claim URL"
+                : "Copy claim URL"
+          }
+        >
+          <HugeiconsIcon
+            icon={copyState === "copied" ? Tick02Icon : Copy01Icon}
+            className="size-3"
+            aria-hidden
+          />
+        </Button>
+      </span>
     </p>
   );
 }

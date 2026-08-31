@@ -65,7 +65,7 @@ export class WorkerLifecycle {
     this.record = await this.deps.recordStore.load(); this.recoveryRequired = await this.deps.recordStore.requiresRecovery();
     if (!this.record) { this.setState(this.recoveryRequired ? "offline" : "idle", this.recoveryRequired ? "Saved worker data needs manual recovery" : undefined); return; }
     if (await this.healthCheck(this.record.url)) { this.startTunnel(this.record.url, this.record.tunnelSecret); this.setState("live"); }
-    else this.setState("offline", "Worker is offline. It will be checked again; use Recreate worker to replace it.");
+    else this.setState("offline", "Worker is offline; we’ll keep checking it, otherwise you can Recreate it");
   }
   private async tick(): Promise<void> {
     // Do not gate recovery on shares: an owner needs an accurate state after a restart.
@@ -75,7 +75,7 @@ export class WorkerLifecycle {
       if (this.state !== "live") this.setState("live");
       return;
     }
-    this.setState("offline", "Worker is offline. It will be checked again; use Recreate worker to replace it.");
+    this.setState("offline", "Worker is offline; we’ll keep checking it, otherwise you can Recreate it");
   }
   private async provisionReplacement(): Promise<void> {
     const prior = this.record; const generation = (prior?.generation ?? -1) + 1;

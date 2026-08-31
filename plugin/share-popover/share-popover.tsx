@@ -314,13 +314,6 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
                 );
               })}
             </ul>
-            <button
-              type="button"
-              onClick={handleManageAll}
-              className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-muted-foreground/80"
-            >
-              Manage all links
-            </button>
           </>
         )}
       </section>
@@ -351,6 +344,15 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
           <p className="text-xs text-destructive">{actionError}</p>
         ) : null}
       </section>
+      {tokens !== null && tokens.length > 0 ? (
+        <button
+          type="button"
+          onClick={handleManageAll}
+          className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-muted-foreground/80"
+        >
+          Manage all links
+        </button>
+      ) : null}
     </div>
   );
 }

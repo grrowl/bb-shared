@@ -10,7 +10,7 @@
     "name": "Shared",
     "description": "Share bb threads with guests via scoped, revocable tokens.",
     "branding": {
-      "icon": "Link"
+      "icon": "Share"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

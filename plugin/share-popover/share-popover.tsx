@@ -9,8 +9,8 @@
 // Recipient-first model (issue 34): a Link is a named recipient you grant
 // threads to. The popover lists the Links and, per row, shows a 3-state
 // `PermSegment` (off | read | write) for THIS thread's grant on that Link.
-// Off revokes, read/write grant. A small read-only badge shows the Link's
-// derived perm summary — the highest perm across all its threads.
+// Off revokes, read/write grant. Each linked row can copy a guest URL that
+// lands directly on this thread.
 //
 // RPC + realtime:
 // - `listTokens()` seeds the list on open; a `REALTIME_CHANNELS.tokensChanged`
@@ -27,7 +27,7 @@
 // `/plugins/shared/tokens` at runtime.
 import * as React from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Share08Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Share08Icon } from "@hugeicons/core-free-icons";
 import {
   useBbNavigate,
   useRealtime,
@@ -45,19 +45,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "../components/ui/popover.js";
-import { cn } from "../lib/utils.js";
 import { REALTIME_CHANNELS } from "../lib/realtime-channels.js";
 import type { Perm, Token, rpcContract } from "../server.js";
 import { subscribeShareOpen } from "./open-bus.js";
 
 const FLASH_MS = 1500;
-
-/** The Link's highest grant across all its threads, for the read-only badge:
- * write if any share is write, else read, else null when the Link holds none. */
-export function derivedPerm(token: Token): Perm | null {
-  if (token.shares.length === 0) return null;
-  return token.shares.some((share) => share.perm === "write") ? "write" : "read";
-}
 
 /** What a segment change on this thread's row means as an rpc intent, given
  * the thread's current perm on the Link (`undefined` when not shared) and the
@@ -98,7 +90,6 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   // until the RPC settles so a double-tap can't race two mutations.
   const [busyTokenId, setBusyTokenId] = React.useState<string | null>(null);
   const [flash, setFlash] = React.useState<string | null>(null);
-  const [newPerm, setNewPerm] = React.useState<Perm>("read");
   const [minting, setMinting] = React.useState(false);
 
   const load = React.useCallback(() => {
@@ -186,7 +177,25 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     [rpc, threadId, projectId, showFlash, load],
   );
 
-  const handleMint = React.useCallback(async () => {
+  const copyUrl = React.useCallback(
+    async (url: string | undefined) => {
+      if (url === undefined) return;
+      const clipboard = globalThis.navigator?.clipboard;
+      if (clipboard !== undefined) {
+        try {
+          await clipboard.writeText(url);
+          showFlash("Link copied.");
+          return;
+        } catch {
+          // Fall through to show the URL for environments that reject writes.
+        }
+      }
+      showFlash(url);
+    },
+    [showFlash],
+  );
+
+  const handleMint = React.useCallback(async (perm: Perm) => {
     setMinting(true);
     setActionError(null);
     try {
@@ -195,7 +204,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
       // needs to set the session cookie). The label is omitted so the server
       // auto-names the Link with its verb-noun generator.
       const { url } = await rpc.call("mintToken", {
-        firstThread: { thread_id: threadId, project_id: projectId, perm: newPerm },
+        firstThread: { thread_id: threadId, project_id: projectId, perm },
       });
 
       // Clipboard writes require a user gesture; the mint button click is
@@ -218,14 +227,12 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     } finally {
       setMinting(false);
     }
-  }, [rpc, threadId, projectId, newPerm, showFlash, load]);
+  }, [rpc, threadId, projectId, showFlash, load]);
 
   const handleManageAll = React.useCallback(() => {
     onClose();
     navigate.toPluginPanel("tokens");
   }, [navigate, onClose]);
-
-  const hasLinks = tokens !== null && tokens.length > 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -249,100 +256,92 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
             No link yet. Create one below to share this thread.
           </p>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {tokens.map((token) => {
-              const existing = token.shares.find(
-                (share) => share.thread_id === threadId,
-              );
-              const value: PermValue = existing?.perm ?? "off";
-              const summary = derivedPerm(token);
-              return (
-                <li
-                  key={token.id}
-                  className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5"
-                >
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span
-                      className="min-w-0 truncate text-xs font-medium"
-                      title={token.label}
-                    >
-                      {token.label}
-                    </span>
-                    {summary !== null ? (
+          <>
+            <ul className="flex flex-col gap-2">
+              {tokens.map((token) => {
+                const existing = token.shares.find(
+                  (share) => share.thread_id === threadId,
+                );
+                const value: PermValue = existing?.perm ?? "off";
+                return (
+                  <li
+                    key={token.id}
+                    className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5"
+                  >
+                    <div className="flex min-w-0 items-center gap-1">
                       <span
-                        className="w-fit rounded bg-muted px-1 py-px text-[10px] uppercase tracking-wide text-muted-foreground"
-                        title="Highest access across this link's threads"
+                        className="min-w-0 truncate text-xs font-medium"
+                        title={token.label}
                       >
-                        {summary}
+                        {token.label}
                       </span>
-                    ) : null}
-                  </div>
-                  <PermSegment
-                    value={value}
-                    onChange={(next) => void handleSegmentChange(token, next)}
-                    disabled={busyTokenId === token.id}
-                    aria-label={`This thread's access on ${token.label}`}
-                    className="shrink-0"
-                  />
-                </li>
-              );
-            })}
-          </ul>
+                      <span
+                        title={
+                          existing?.url === undefined
+                            ? "Share this thread first to copy its URL"
+                            : "Copy URL for this thread"
+                        }
+                      >
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={existing?.url === undefined}
+                          onClick={() => void copyUrl(existing?.url)}
+                          className="size-5 shrink-0 text-muted-foreground hover:text-foreground"
+                          aria-label={`Copy ${token.label} URL for this thread`}
+                        >
+                          <HugeiconsIcon icon={Copy01Icon} className="size-3" aria-hidden />
+                        </Button>
+                      </span>
+                    </div>
+                    <PermSegment
+                      value={value}
+                      onChange={(next) => void handleSegmentChange(token, next)}
+                      disabled={busyTokenId === token.id}
+                      aria-label={`This thread's access on ${token.label}`}
+                      className="shrink-0"
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              type="button"
+              onClick={handleManageAll}
+              className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              Manage all links
+            </button>
+          </>
         )}
       </section>
 
       {/* Create a new link --------------------------------------------- */}
       <section className="flex flex-col gap-2 border-t border-border/60 pt-3">
-        <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          New link
-        </h4>
         <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium">Create new link</span>
           <div
-            role="radiogroup"
-            aria-label="Guest permission"
+            role="group"
+            aria-label="Create link with permission"
             className="inline-flex items-center rounded-md border border-input p-0.5"
           >
             {(["read", "write"] as const).map((perm) => (
               <button
                 key={perm}
                 type="button"
-                role="radio"
-                aria-checked={newPerm === perm}
-                onClick={() => setNewPerm(perm)}
-                className={cn(
-                  "h-6 rounded-sm px-2 text-xs capitalize transition-colors",
-                  newPerm === perm
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:bg-state-hover hover:text-foreground",
-                )}
+                disabled={minting}
+                onClick={() => void handleMint(perm)}
+                className="h-6 rounded-sm px-2 text-xs capitalize text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {perm}
               </button>
             ))}
           </div>
-          <Button
-            variant="default"
-            size="sm"
-            disabled={minting}
-            onClick={() => void handleMint()}
-            className="h-7 px-3 text-xs"
-          >
-            {minting ? "Creating…" : hasLinks ? "Create new link" : "Create link"}
-          </Button>
         </div>
         {actionError !== null ? (
           <p className="text-xs text-destructive">{actionError}</p>
         ) : null}
       </section>
-
-      {/* Manage-all link ----------------------------------------------- */}
-      <button
-        type="button"
-        onClick={handleManageAll}
-        className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline"
-      >
-        Manage all links
-      </button>
     </div>
   );
 }

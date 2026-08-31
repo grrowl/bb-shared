@@ -9,11 +9,10 @@
 //   thread with an off/read/write segment that grants, upgrades, downgrades,
 //   or revokes), a copy-URL action, and delete-token behind an `AlertDialog`
 //   confirm.
-// - The header carries a "Mint new" button and a live worker-status pill that
-//   calls `getWorkerStatus` — a stub in v0 (issue 07 fills it), so a
-//   "not implemented" rejection is handled gracefully as an "offline" pill.
-//   When the status carries CF `claim` data the pill area surfaces the
-//   claim.url nudge inline; otherwise a placeholder explains it.
+// - The header carries a live worker-status pill that calls `getWorkerStatus`
+//   — a stub in v0 (issue 07 fills it), so a "not implemented" rejection is
+//   handled gracefully as an "offline" pill. When a temporary worker exposes
+//   a claim URL, its status reads "Temporary worker" beside a Claim action.
 // - `useRealtime("tokens-changed")` refetches so mutations made from the share
 //   popover (or another window) reflect here immediately.
 //
@@ -31,9 +30,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Copy01Icon,
   Delete02Icon,
-  Link04Icon,
   PencilEdit02Icon,
-  PlusSignIcon,
+  Share08Icon,
 } from "@hugeicons/core-free-icons";
 
 import { Button } from "../components/ui/button.js";
@@ -150,11 +148,13 @@ function useClaimUrl(): string | undefined {
 function WorkerStatusPill({
   state,
   hasShares,
+  temporary,
 }: {
   state: WorkerState;
   hasShares: boolean;
+  temporary: boolean;
 }) {
-  const { label, dotClass, title } = describeWorker(state, hasShares);
+  const { label, dotClass, title } = describeWorker(state, hasShares, temporary);
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2.5 py-1 text-xs text-muted-foreground"
@@ -173,6 +173,7 @@ function WorkerStatusPill({
 function describeWorker(
   state: WorkerState,
   hasShares: boolean,
+  temporary: boolean,
 ): {
   label: string;
   dotClass: string;
@@ -209,9 +210,11 @@ function describeWorker(
     case "ready":
       return state.status.healthy
         ? {
-            label: "Worker live",
+            label: temporary ? "Temporary worker" : "Worker live",
             dotClass: "bg-emerald-500",
-            title: state.status.url ?? "Worker is live",
+            title: temporary
+              ? "Claim this temporary worker within 60 minutes to keep it."
+              : (state.status.url ?? "Worker is live"),
           }
         : {
             label: "Worker having trouble",
@@ -222,39 +225,34 @@ function describeWorker(
 }
 
 /**
- * The claim-URL nudge. SPEC §"Worker lifecycle": unclaimed CF temp accounts
- * self-destruct after 60 min; the owner UI surfaces `claim.url` so they can
- * keep the worker alive. `claim.url` is a bearer credential — never shown to
- * guests, and we open it via the host's browser preference rather than
- * rendering it as raw copyable text.
+ * The claim action. SPEC §"Worker lifecycle": unclaimed CF temp accounts
+ * self-destruct after 60 min, so an owner can claim it from the status area.
+ * `claim.url` is a bearer credential — never shown to guests, and we open it
+ * via the host's browser preference rather than rendering it as raw text.
  */
-function WorkerClaimNudge() {
+function ClaimWorkerButton({ claimUrl }: { claimUrl: string | undefined }) {
   const navigate = useBbNavigate();
-  const claimUrl = useClaimUrl();
 
-  // Only show the nudge once a worker exists and there is a real claim link.
-  // Before that there is nothing to claim, so the line stays hidden.
+  // The claim URL is a bearer credential, so it is never rendered as text or
+  // sent to guests. It is opened through the host browser on explicit action.
   if (claimUrl === undefined) return null;
 
   return (
-    <p className="text-xs text-muted-foreground">
-      This worker is temporary and is removed 60 minutes after it starts.{" "}
-      <button
-        type="button"
-        onClick={() => navigate.openUrl(claimUrl)}
-        className="font-medium text-foreground underline underline-offset-2 hover:text-foreground/80"
-      >
-        Claim this worker
-      </button>{" "}
-      to keep your share links working.
-    </p>
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => navigate.openUrl(claimUrl)}
+      className="h-7 px-2 text-xs"
+    >
+      Claim worker
+    </Button>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Cloudflare connection (issue 28). The owner connects their real Cloudflare
 // account by OAuth so a claimed worker is reused across restarts and managed
-// from the API. This surfaces alongside the claim nudge: connect, the connected
+// from the API. This surfaces below the status area: connect, the connected
 // state (account + live hostname), and disconnect. Copy stays short and factual.
 //
 // The connect RPC returns an authorize URL the browser opens; the exchange +
@@ -828,13 +826,12 @@ export function TokenCard({
 // ---------------------------------------------------------------------------
 
 export function TokensPanel(_props: PluginNavPanelProps) {
-  const rpc = useRpc<typeof rpcContract>();
   const { tokens, error, refetch } = useTokens();
   const worker = useWorkerStatus();
+  const claimUrl = useClaimUrl();
 
   const [flash, setFlash] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
-  const [minting, setMinting] = React.useState(false);
 
   const showFlash = React.useCallback((message: string) => {
     setFlash(message);
@@ -842,30 +839,6 @@ export function TokensPanel(_props: PluginNavPanelProps) {
       setFlash((current) => (current === message ? null : current));
     }, FLASH_MS);
   }, []);
-
-  const handleMint = React.useCallback(async () => {
-    setMinting(true);
-    setActionError(null);
-    try {
-      const { url } = await rpc.call("mintToken", {});
-      const clipboard = globalThis.navigator?.clipboard;
-      if (clipboard !== undefined) {
-        try {
-          await clipboard.writeText(url);
-          showFlash("Link created. Copied.");
-        } catch {
-          showFlash(url);
-        }
-      } else {
-        showFlash(url);
-      }
-      refetch();
-    } catch (err: unknown) {
-      setActionError(errorText(err));
-    } finally {
-      setMinting(false);
-    }
-  }, [rpc, showFlash, refetch]);
 
   return (
     <div className="h-full min-h-0 flex-1 overflow-y-auto">
@@ -875,7 +848,7 @@ export function TokensPanel(_props: PluginNavPanelProps) {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <HugeiconsIcon
-                icon={Link04Icon}
+                icon={Share08Icon}
                 className="size-4 text-muted-foreground"
                 aria-hidden
               />
@@ -885,24 +858,11 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               <WorkerStatusPill
                 state={worker.state}
                 hasShares={(tokens?.length ?? 0) > 0}
+                temporary={claimUrl !== undefined}
               />
-              <Button
-                variant="default"
-                size="sm"
-                disabled={minting}
-                onClick={() => void handleMint()}
-                className="h-8 gap-1.5 px-3 text-xs"
-              >
-                <HugeiconsIcon
-                  icon={PlusSignIcon}
-                  className="size-3.5"
-                  aria-hidden
-                />
-                {minting ? "Creating…" : "Create link"}
-              </Button>
+              <ClaimWorkerButton claimUrl={claimUrl} />
             </div>
           </div>
-          <WorkerClaimNudge />
           <CloudflareConnect
             workerExists={
               worker.state.kind === "ready" && Boolean(worker.state.status.url)
@@ -938,8 +898,8 @@ export function TokensPanel(_props: PluginNavPanelProps) {
             <p className="text-xs text-muted-foreground">Loading links…</p>
           ) : tokens.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No links yet. Create one above, or use the Share button in any
-              thread header.
+              No links yet. Use the Share button in any thread header to
+              create one.
             </p>
           ) : (
             <ul className="flex flex-col gap-3">

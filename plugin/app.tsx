@@ -25,7 +25,7 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "tokens",
     title: "Shared threads",
-    icon: "Link",
+    icon: "Share",
     path: "tokens",
     component: TokensPanel,
   });

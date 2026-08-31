@@ -369,6 +369,8 @@ export function buildShareUrl(
 export interface EnrichedShare extends Share {
   /** Resolved thread title; falls back to `thread_id` when the thread is gone. */
   title: string;
+  /** Guest link that lands directly on this thread, while the raw token is cached. */
+  url?: string;
 }
 
 export interface EnrichedToken extends Omit<Token, "shares"> {
@@ -412,7 +414,20 @@ export async function enrichToken(
         // Thread deleted, or the lookup failed — show the id (SPEC surface 5).
         title = s.thread_id;
       }
-      return { ...s, title };
+      return {
+        ...s,
+        title,
+        url:
+          deps.rawToken !== undefined
+            ? buildShareUrl(deps.rawToken, {
+                workerOrigin: deps.workerOrigin,
+                firstThread: {
+                  project_id: s.project_id,
+                  thread_id: s.thread_id,
+                },
+              })
+            : undefined,
+      };
     }),
   );
   const first = token.shares[0];

@@ -52,6 +52,9 @@ export const shareSchema = z.object({
   // title up when it builds the token list and falls back to `thread_id` when
   // the thread is gone, so share rows read as titles, not raw ids.
   title: z.string(),
+  // A guest URL that lands directly on this share's thread. Like `Token.url`,
+  // this is available only while the raw token remains in this plugin process.
+  url: z.string().optional(),
 });
 export type Share = z.output<typeof shareSchema>;
 

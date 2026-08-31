@@ -358,7 +358,7 @@ describe("enrichToken (issue 32)", () => {
     expect(wire.shares[0].title).toBe("t-gone");
   });
 
-  it("builds a URL that deep-links to shares[0] and equals buildShareUrl", async () => {
+  it("builds per-thread URLs and keeps the token URL on its first share", async () => {
     const wire = await enrichToken(baseToken([share("t1"), share("t2")]), {
       rawToken: "bbsh_raw",
       workerOrigin: "https://guest.example",
@@ -369,6 +369,13 @@ describe("enrichToken (issue 32)", () => {
       buildShareUrl("bbsh_raw", {
         workerOrigin: "https://guest.example",
         firstThread: { project_id: "p1", thread_id: "t1" },
+      }),
+    );
+    expect(wire.shares[0].url).toBe(wire.url);
+    expect(wire.shares[1].url).toBe(
+      buildShareUrl("bbsh_raw", {
+        workerOrigin: "https://guest.example",
+        firstThread: { project_id: "p1", thread_id: "t2" },
       }),
     );
   });

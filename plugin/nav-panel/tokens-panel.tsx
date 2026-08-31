@@ -406,10 +406,12 @@ function RenameableLabel({
   token,
   onRenamed,
   onError,
+  badge,
 }: {
   token: Token;
   onRenamed: () => void;
   onError: (message: string) => void;
+  badge?: React.ReactNode;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [editing, setEditing] = React.useState(false);
@@ -446,42 +448,52 @@ function RenameableLabel({
 
   if (editing) {
     return (
-      <Input
-        ref={inputRef}
-        value={draft}
-        maxLength={64}
-        disabled={saving}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => void commit()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            void commit();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            setEditing(false);
-          }
-        }}
-        aria-label="Token label"
-        className="h-7 max-w-56 text-sm font-medium"
-      />
+      <div className="flex min-w-0 items-center gap-2">
+        <Input
+          ref={inputRef}
+          value={draft}
+          maxLength={64}
+          disabled={saving}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => void commit()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+          aria-label="Token label"
+          className="h-7 max-w-56 text-sm font-medium"
+        />
+        {badge}
+      </div>
     );
   }
 
   return (
-    <button
-      type="button"
-      onClick={startEdit}
-      className="group inline-flex items-center gap-1.5 rounded-sm text-sm font-medium hover:text-foreground"
-      title="Rename link"
-    >
-      <span className="truncate">{token.label}</span>
-      <HugeiconsIcon
-        icon={PencilEdit02Icon}
-        className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-        aria-hidden
-      />
-    </button>
+    <div className="flex min-w-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={startEdit}
+        className="min-w-0 truncate rounded-sm text-sm font-medium hover:text-foreground"
+        title="Rename link"
+      >
+        {token.label}
+      </button>
+      {badge}
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={startEdit}
+        className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+        aria-label={`Rename link ${token.label}`}
+      >
+        <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" aria-hidden />
+      </Button>
+    </div>
   );
 }
 
@@ -647,16 +659,12 @@ export function TokenCard({
   return (
     <li className="flex flex-col gap-3 rounded-lg border border-border/60 bg-background/40 p-3">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <RenameableLabel
-            token={token}
-            onRenamed={onChanged}
-            onError={onError}
-          />
-          {derivedPerm !== null ? (
-            <PermSummaryBadge perm={derivedPerm} />
-          ) : null}
-        </div>
+        <RenameableLabel
+          token={token}
+          onRenamed={onChanged}
+          onError={onError}
+          badge={derivedPerm !== null ? <PermSummaryBadge perm={derivedPerm} /> : undefined}
+        />
         <div className="flex shrink-0 items-center gap-1">
           {/* `ButtonProps` omits `title`; the native tooltip rides the
               wrapping span instead. `token.url` is held in memory for the

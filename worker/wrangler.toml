@@ -4,7 +4,7 @@ compatibility_date = "2025-06-01"
 workers_dev = true
 
 # The tunnel handshake bearer. In production this is set by the plugin's
-# deploy flow (issue 07) as a Cloudflare secret before the worker goes live;
+# deploy flow as a Cloudflare secret before the worker goes live;
 # for local dev, drop into `.dev.vars`:
 #
 #   TUNNEL_SECRET=dev-secret-anything
@@ -12,7 +12,7 @@ workers_dev = true
 # (Never commit `.dev.vars` — see .gitignore.)
 
 # Single DO instance per worker deployment; ownership of the singleton is
-# implicit — one owner per worker (see SPEC "Non-goals: multi-tenancy").
+# implicit — one owner per worker.
 [[durable_objects.bindings]]
 name = "TUNNEL_DO"
 class_name = "TunnelDO"
@@ -21,7 +21,7 @@ class_name = "TunnelDO"
 # deploy pipeline knows about TunnelDO before the script arrives. Temp accounts
 # are on CF's free plan, where Durable Objects MUST use a SQLite-backed
 # migration — a legacy `new_classes` migration is rejected with error 10097
-# (verified live: research/cf-live-verification.md TASK 1 bug 2). TunnelDO uses
+# (a legacy `new_classes` migration is rejected with error 10097). TunnelDO uses
 # only the WebSocket hibernation API, which SQLite-backed DOs fully support.
 [[migrations]]
 tag = "v1"

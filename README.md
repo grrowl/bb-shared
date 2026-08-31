@@ -1,45 +1,74 @@
 # bb-shared
 
-A bb plugin that lets the owner grant a guest **live access to specific bb
-threads** — read or write, per thread — via a scoped, revocable capability
-token. The guest opens a URL and gets the real bb SPA scoped to just their
-shared threads (not a stripped mirror): they can watch the transcript live and,
-with `write` perm, inject input as user messages. The owner can add/remove
-threads, change perms, or revoke the whole token at any time, and changes take
-effect immediately. Intended for pair-programming / pair-prompting during
-grilling sessions.
+Share live [bb](https://getbb.app) threads with a scoped, revocable link.
+Guests get the real bb interface, limited to the threads you choose. Each link
+can grant read-only or write access per thread.
 
-Three components: a per-owner **Cloudflare Worker** (fork of bb connect,
-deployed anonymously via CF temp-deployments) that gates guests on the token and
-proxies to the owner's local bb over a tunnel; a vendored **tunnel client**
-wrapped in a `SharedTunnel`; and the **bb-shared plugin** running in-process in
-the local bb server, holding token state, answering scope checks, and exposing
-the owner UI. The SPA has no user/session concept, so all scoping is enforced at
-the worker via response filters, a mutation gate, a WebSocket frame filter, and
-a small chrome shim.
+## What it does
 
-## Status
+- Share one or more threads through a named link.
+- Change access or revoke a link at any time.
+- Give guests a live, scoped bb view; write links can send user messages.
+- Create a temporary Cloudflare Worker automatically. Claim it to keep its
+  stable `workers.dev` hostname after Cloudflare's temporary period.
+- Keep shared links across bb and plugin restarts. Link credentials are stored
+  in an encrypted, device-bound record on the owner's machine.
 
-**v0 complete** — all v0 tickets (01–19) resolved. State is in-memory (tokens
-die on plugin restart; the worker deployment record persists in
-`bb.storage.kv`). See the runbook's "Known v0 limitations" for the full list.
+## Install
 
-## Docs
+Requirements: a current bb installation and Node.js 20 or later.
 
-- **[SPEC.md](SPEC.md)** — full design: architecture, transport, data model,
-  scope enforcement, owner UI, non-goals.
-- **[docs/e2e-runbook.md](docs/e2e-runbook.md)** — manual end-to-end smoke-test
-  runbook: install → deploy → mint → guest walk-through → revocation, with the
-  SPEC-vs-reality drift flagged.
-- **[.scratch/v0/map.md](.scratch/v0/map.md)** — v0 feature map and decision log.
+```sh
+git clone https://github.com/grrowl/bb-shared.git
+cd bb-shared
+npm install
+(cd worker && npm install)
+bb plugin build plugin
+bb plugin install path:"$PWD/plugin" --yes
+```
 
-## Layout
+Open a thread in bb and select **Share this thread**. The first new link
+creates a temporary Cloudflare Worker. Use **Shared threads** in the sidebar to
+see links, their worker, and the claim action.
 
-- [`plugin/`](plugin/README.md) — the bb-shared plugin (token store, authz
-  endpoint, worker lifecycle, owner UI). Install/dev in its README.
-- [`worker/`](worker/README.md) — the Cloudflare Worker (token gating +
-  proxy pipeline). Dev/deploy notes in its README.
-- `packages/` — vendored bb tunnel-contract + tunnel-client.
-- `research/` — spike outputs (CF temp-deployments, tunnel client, realtime
-  events).
-- `.scratch/v0/` — v0 planning: the map and per-ticket issues.
+## Worker lifecycle
+
+bb-shared does not ask for access to your Cloudflare account. It creates a
+temporary worker instead. Cloudflare may clean up an unclaimed worker after 60
+minutes; **Claim your worker** transfers that temporary account to you and
+keeps its hostname.
+
+bb-shared cannot confirm whether a claim completed. It keeps checking the
+saved worker and reports it as online or offline. **Recreate** explicitly makes
+a new worker and hostname; existing links keep pointing to the old worker.
+
+## Security model
+
+Shared URLs are bearer credentials: anyone who has a link has the access it
+grants until you change or revoke it. The plugin stores those credentials and
+their grants encrypted with a key bound to the owner's device (macOS Keychain
+where available). They are never sent to guests except as the URL they use.
+
+The Cloudflare Worker enforces scope before proxying to the local bb server.
+It filters guest-visible data and WebSocket traffic, and keeps owner-only bb
+routes and plugin RPCs out of reach.
+
+This is early software. Do not share threads containing secrets or other data
+you would not want a link recipient to read.
+
+## Development
+
+```sh
+npm exec --workspace=bb-plugin-shared -- tsc -p tsconfig.json --noEmit
+npm exec --workspace=bb-plugin-shared -- vitest run
+(cd worker && npm run typecheck && npm test)
+bb plugin build plugin
+bb plugin reload shared
+```
+
+See [plugin/README.md](plugin/README.md) and [worker/README.md](worker/README.md)
+for component-specific notes.
+
+## License
+
+[MIT](LICENSE)

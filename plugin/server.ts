@@ -1,12 +1,5 @@
-// bb-plugin-shared — backend entry.
-//
-// Scaffold for issue 04 (see `.scratch/v0/issues/04-plugin-scaffold.md`). The
-// RPC contract is complete and typed; the handlers are stubs that throw
-// "not implemented" so downstream issues (05 token store, 06 authz, 07
-// worker deploy) can fill the bodies without touching call sites.
-//
-// One consumer: the frontend at `app.tsx`, which reaches these methods with
-// `useRpc<typeof rpcContract>()`.
+// bb-plugin-shared — backend entry. The typed RPC contract is consumed by the
+// frontend in `app.tsx`; this module owns its handlers and worker lifecycle.
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -30,8 +23,7 @@ import { ShareStateRecordStore } from "./lib/share-state-record";
 import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
-// Data model (SPEC.md §"Data model"). In-memory in v0; the shape is designed
-// so a persistent store can slot in later without touching call sites.
+// Data model exposed over the owner-only RPC boundary.
 // ---------------------------------------------------------------------------
 
 export const permSchema = z.enum(["read", "write"]);

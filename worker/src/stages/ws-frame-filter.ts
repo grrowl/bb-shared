@@ -1,8 +1,7 @@
 /**
  * Stage 11: bidirectional WebSocket frame filter.
  *
- * Two WS surfaces reach a guest (see `research/realtime-events.md`, the spike
- * 03 catalog):
+ * Two WS surfaces reach a guest:
  *
  *   - `GET /ws` — the main app socket, multiplexed by subscribe/unsubscribe
  *     frames plus a handful of broadcast signals the server sends to every
@@ -18,7 +17,7 @@
  * synthetic frame streams. The stage wires them onto a live `WebSocketPair`
  * via `bridgeGuestWebSocket`, which only runs on the Workers runtime.
  *
- * Scope source: `ctx.scope`, populated upstream by the authz stage (issue 10)
+ * Scope source: `ctx.scope`, populated upstream by the authz stage
  * from the token's shares. Absent (null) ⇒ `EMPTY_SCOPE` ⇒ deny every
  * thread/project frame; pong/ping still flow. Safe-by-default.
  */

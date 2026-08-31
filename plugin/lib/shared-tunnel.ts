@@ -1,4 +1,4 @@
-// SharedTunnel (issue 14) — the local half of the bb-shared tunnel.
+// SharedTunnel — the local half of the bb-shared tunnel.
 //
 // Opens a WebSocket to our deployed CF worker's `/__tunnel` route, authed with
 // a bearer secret (the worker's `TUNNEL_SECRET`), and hands the live socket to
@@ -7,10 +7,9 @@
 // backoff.
 //
 // Wrapper only: the wire protocol + the header rewrite that makes the local
-// Origin guard pass both live in the vendored packages (see
-// `packages/bb-shared-tunnel-*`, spike 02 in `research/tunnel-client.md`).
+// Origin guard pass both live in the vendored packages.
 //
-// Owned by 07's lifecycle: on (re)deploy the manager constructs a SharedTunnel
+// Owned by the lifecycle manager: on (re)deploy it constructs a SharedTunnel
 // with the fresh `{ workerUrl, tunnelSecret }`, calls `start()`, and calls
 // `stop()` on the previous one. Each instance targets one worker deployment.
 import { WebSocket as NodeWebSocket } from "ws";

@@ -1,10 +1,10 @@
-// bb-shared authz endpoint (issue 06).
+// bb-shared authz endpoint.
 //
 // A plugin-hosted, token-authenticated HTTP endpoint the CF worker pulls on
 // every guest request to make the AUTHORITATIVE allow/deny decision, plus the
-// token's thread scope (which the worker uses to shape its response filters,
-// issue 09) and per-thread perms (which the worker's mutation gate, issue 10,
-// enforces). No authz logic is duplicated in the worker — it only does path
+// token's thread scope (which the worker uses to shape response filters) and
+// per-thread permissions (which the worker's mutation gate enforces). No authz
+// logic is duplicated in the worker — it only does path
 // matching and enforces whatever we return here.
 //
 //   GET /api/v1/plugins/shared/http/authz?token=…&path=…&method=…
@@ -13,7 +13,6 @@
 //   { allowed, thread_scope: string[], project_scope: string[],
 //     perms: {thread_id, mode}[], reason? }
 //
-// See SPEC.md §"Worker knowledge of scope" and §"Scope enforcement".
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Perm, Store, Token } from "../lib/token-store";
 

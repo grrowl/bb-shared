@@ -4,7 +4,7 @@
 // durable snapshot is owned by `share-state-record.ts` and restores it after
 // a plugin or app restart.
 //
-// Security note (per ticket 05, refining SPEC.md):
+// Security note:
 // - The raw token is generated once and used as the guest bearer. The active
 //   store never exposes it; the owner-only durable snapshot encrypts it with a
 //   device-bound key so existing links can survive restarts.

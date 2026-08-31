@@ -13,8 +13,8 @@
  *      frames into a Response, and pump `ws-data` both ways for upgrades.
  *   3. Answer 503 with `x-bb-tunnel-offline: 1` when no tunnel is connected.
  *
- * This is a faithful port of bb's `apps/connect/src/tunnel-do.ts` (issue 27,
- * decision in `.scratch/v0/issues/27-*.md`), trimmed of the bits bb-shared does
+ * This is a faithful port of bb's `apps/connect/src/tunnel-do.ts`, trimmed of
+ * the bits bb-shared does
  * not need: no D1/presence/machine bookkeeping, and no `target` port-sharing
  * (bb-shared is one worker per bb instance; every stream routes to the single
  * loopback origin, so the DO never sets a `target` on any frame). The wire

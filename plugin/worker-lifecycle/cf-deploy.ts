@@ -1,21 +1,16 @@
-// Cloudflare deploy pipeline (issue 07, absorbing former issue 13).
+// Cloudflare temporary-worker deploy pipeline.
 //
-// The always-temp deploy path from spike 01 (`research/cf-temp-deployments.md`
-// §"Path B"): solve the PoW challenge → provision an anonymous temp account →
+// It solves the PoW challenge, provisions an anonymous temporary account, then
 // upload the bundled worker script (with the TunnelDO binding + our two
 // secrets) via a raw multipart PUT → enable the workers.dev route → wait for
 // route propagation → resolve the `*.workers.dev` URL.
 //
-// One code path, always temp (SPEC §"Worker lifecycle": "no wrangler dep, no
-// branching"). Every deploy provisions a FRESH temp account, so the DO
+// One code path, always temporary. Every deploy provisions a fresh account, so the DO
 // migration is always a first-time SQLite-backed migration; we never re-key a
 // live account. Redeploy == a fresh provision with a freshly-minted tunnel
 // secret.
 //
-// This pipeline was verified end to end against the LIVE Cloudflare API
-// (research/cf-live-verification.md TASK 1). Three of its contracts cannot be
-// caught by offline unit tests because they are live-API behaviours, so they
-// are pinned by comments here and by ticket 30: the free-plan SQLite DO
+// Some deployment contracts cannot be caught by offline unit tests: the free-plan SQLite DO
 // migration (error 10097), the raw multipart upload that the `cloudflare` SDK
 // v7.1.0 `scripts.update` gets wrong (error 10021), and the ~15 s workers.dev
 // route propagation after the per-script subdomain enable.
@@ -238,11 +233,10 @@ async function provisionAccount(
 //
 // The `cloudflare` SDK v7.1.0 `scripts.update` mis-transmits the module body
 // (CF rejects it with error 10021, a bogus syntax error at worker.js:1:4) —
-// proven live in research/cf-live-verification.md TASK 1 bug 3, against BOTH the
-// SDK's `new File()` and `toFile()` paths. So we build the multipart PUT
+// observed with both the SDK's `new File()` and `toFile()` paths. So we build the multipart PUT
 // directly, exactly as wrangler does: a JSON `metadata` part + a `worker.js`
 // module part (`application/javascript+module`). No offline test can catch the
-// SDK mismatch; ticket 30 carries it.
+// SDK mismatch.
 // ---------------------------------------------------------------------------
 
 async function uploadScript(

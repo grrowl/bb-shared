@@ -12,8 +12,8 @@ Verbatim copy of bb's transport-generic tunnel wire protocol package.
 ## Why vendored
 
 Upstream is a `private: true` workspace-only package — not npm-installable.
-Per spike 02 (`research/tunnel-client.md`) we vendor it rather than fork
-`plugins/connect`.
+It is vendored here so the Worker and plugin can share the exact transport
+contract without depending on an unpublished bb workspace.
 
 ## Sync policy
 

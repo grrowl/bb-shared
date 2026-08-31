@@ -7,7 +7,7 @@ import { CONTROL_HOVER_TRANSITION } from "./motion.js";
 /**
  * The three states a guest can hold on a thread: no access, read, or write.
  * "off" is the absence of a share; "read" and "write" are the two permission
- * words the owner chose (see .scratch/v0/ux-refinement.md).
+ * words the owner chose.
  */
 export type PermValue = "off" | "read" | "write";
 

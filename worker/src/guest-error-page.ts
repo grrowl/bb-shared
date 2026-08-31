@@ -4,13 +4,13 @@
  * responses are rendered by the worker before the tunnel reaches bb.
  */
 
-function page(description: string): string {
+function page(heading: string, description: string): string {
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Not found</title>
+    <title>${heading}</title>
     <style>
       :root { color-scheme: light dark; }
       * { box-sizing: border-box; }
@@ -43,15 +43,15 @@ function page(description: string): string {
   </head>
   <body>
     <main>
-      <h1>Not found</h1>
+      <h1>${heading}</h1>
       <p>${description}</p>
     </main>
   </body>
 </html>`;
 }
 
-function htmlResponse(description: string): Response {
-  return new Response(page(description), {
+function htmlResponse(heading: string, description: string): Response {
+  return new Response(page(heading, description), {
     status: 404,
     headers: {
       "content-type": "text/html; charset=utf-8",
@@ -62,14 +62,14 @@ function htmlResponse(description: string): Response {
 
 /** A link was revoked or no longer grants access to the requested thread. */
 export function sharedThreadNotFoundPage(): Response {
-  return htmlResponse(
+  return htmlResponse("Not found",
     "This shared thread is no longer available. Ask the person who shared it with you for a new link.",
   );
 }
 
 /** A bare worker URL was opened without a shared link. */
 export function sharedLinkRequiredPage(): Response {
-  return htmlResponse(
+  return htmlResponse("Not authenticated",
     "This worker only opens shared bb threads. Ask the person who shared it with you for a link.",
   );
 }

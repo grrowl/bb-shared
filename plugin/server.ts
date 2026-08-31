@@ -16,8 +16,8 @@ import {
   DuplicateShareError,
   ShareNotFoundError,
   TokenNotFoundError,
-  type Store,
   type Token as StoredToken,
+  type TokenSnapshot,
 } from "./lib/token-store";
 import { registerAuthzRoute } from "./authz/authz";
 import {
@@ -26,6 +26,7 @@ import {
   createWorkerRecordStore,
 } from "./worker-lifecycle";
 import { createDeviceKeyProvider } from "./lib/device-key";
+import { ShareStateRecordStore } from "./lib/share-state-record";
 import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
@@ -45,8 +46,8 @@ export const shareSchema = z.object({
   // title up when it builds the token list and falls back to `thread_id` when
   // the thread is gone, so share rows read as titles, not raw ids.
   title: z.string(),
-  // A guest URL that lands directly on this share's thread. Like `Token.url`,
-  // this is available only while the raw token remains in this plugin process.
+  // A guest URL that lands directly on this share's thread. It is rebuilt from
+  // the owner-only encrypted share-state record and never crosses to guests.
   url: z.string().optional(),
 });
 export type Share = z.output<typeof shareSchema>;
@@ -57,10 +58,8 @@ export const tokenSchema = z.object({
   label: z.string(),
   shares: z.array(shareSchema),
   created_at: z.number(),
-  // Session guest link (issue 32). Present while the raw token is still held in
-  // memory this session so Copy link keeps working; the raw token itself never
-  // crosses this boundary and is never persisted. Every listed token is from
-  // this session, so in practice this is always set.
+  // Owner-only guest link, rebuilt from the encrypted durable share state so
+  // Copy link continues working after a plugin or app restart.
   url: z.string().optional(),
 });
 export type Token = z.output<typeof tokenSchema>;
@@ -200,15 +199,58 @@ export { REALTIME_CHANNELS } from "./lib/realtime-channels";
 export default async function plugin(bb: BbPluginApi) {
   bb.log.info("bb-plugin-shared loaded");
 
-  // Per-process, in-memory token store. HMAC key + tokens die with the plugin
-  // (SPEC §"Data model (in-memory only)"), guest URLs die with them.
-  const store: Store = new InMemoryStore();
+  // Device-tied encryption protects both the worker connection record and the
+  // durable shared-link state. On macOS the key is in Keychain; elsewhere it
+  // has a 0600-file fallback. It never lives in bb.storage.kv.
+  const deviceKeyProvider = createDeviceKeyProvider({
+    dataDir: () => bb.server.experimental_dataDir,
+    pluginId: bb.pluginId,
+    log: bb.log,
+  });
+  const shareState = new ShareStateRecordStore(
+    bb.storage.kv,
+    deviceKeyProvider,
+    bb.log,
+  );
+  const restoredShares = await shareState.load();
+  // Hashes are derived under a fresh process-local HMAC key. Only the actual
+  // guest bearers and their grants are persisted, inside the encrypted record.
+  const store = new InMemoryStore({ initialTokens: restoredShares });
+  const rawTokenById = new Map(restoredShares.map((token) => [token.id, token.rawToken]));
 
-  // Raw guest tokens, held in memory ONLY for the session (issue 32, SPEC
-  // surface 4) so Copy link keeps working after mint. Never persisted — not to
-  // disk, not to bb.storage.kv — so it dies with the plugin exactly like the
-  // HMAC key that would let it match. Keyed by the public token id.
-  const rawTokenById = new Map<string, string>();
+  const persistShares = async () => {
+    const tokens = await store.listTokens();
+    const snapshot: TokenSnapshot[] = tokens.map((token) => {
+      const rawToken = rawTokenById.get(token.id);
+      if (rawToken === undefined) throw new Error(`Missing bearer for shared link ${token.id}.`);
+      const { hash: _hash, ...stored } = token;
+      return { ...stored, rawToken };
+    });
+    await shareState.save(snapshot);
+  };
+  // Mutations and their encrypted snapshots are serialized: a slower earlier
+  // KV write can never overwrite a newer grant change.
+  let shareMutationQueue: Promise<void> = Promise.resolve();
+  const mutateShares = <T,>(operation: () => Promise<T>): Promise<T> => {
+    const mutation = shareMutationQueue.then(async () => {
+      const priorTokens = await store.listTokens();
+      const priorRawTokens = new Map(rawTokenById);
+      const value = await operation();
+      try {
+        await persistShares();
+      } catch (error) {
+        // Do not claim a change succeeded when its encrypted record could not
+        // be written. Restore the live authz state to the prior durable view.
+        store.restoreTokens(priorTokens);
+        rawTokenById.clear();
+        for (const [id, rawToken] of priorRawTokens) rawTokenById.set(id, rawToken);
+        throw error;
+      }
+      return value;
+    });
+    shareMutationQueue = mutation.then(() => undefined, () => undefined);
+    return mutation;
+  };
 
   // Resolve a thread's display title for the token list (issue 32, surface 5).
   // Returns null when the thread has no title yet; enrichToken falls the id
@@ -243,17 +285,6 @@ export default async function plugin(bb: BbPluginApi) {
     process.env.BB_SHARED_WORKER_DIR ??
     fileURLToPath(new URL("../worker", import.meta.url));
 
-  // Device-tied key for at-rest encryption of the worker record's secret
-  // fields (issue 29). macOS Keychain on this owner's Mac; a 0600 file fallback
-  // elsewhere. The key never touches the repo or bb.storage.kv. `dataDir` is a
-  // thunk so the bind-gated `experimental_dataDir` is only read on the
-  // non-macOS fallback path, not at plugin load.
-  const deviceKeyProvider = createDeviceKeyProvider({
-    dataDir: () => bb.server.experimental_dataDir,
-    pluginId: bb.pluginId,
-    log: bb.log,
-  });
-
   const lifecycle = new WorkerLifecycle({
     recordStore: createWorkerRecordStore(bb.storage.kv, {
       keyProvider: deviceKeyProvider,
@@ -287,25 +318,28 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(rpcContract, {
     async mintToken(input) {
-      let { token, rawToken } = await store.mintToken({ label: input.label });
-      // Hold the raw token in memory for the session (issue 32) so listTokens
-      // can rebuild its URL for Copy link. Never persisted.
-      rawTokenById.set(token.id, rawToken);
-      // Attach the requesting thread in the same call (when given) so the
-      // returned link deep-links straight to it. Without a share the link
-      // resolves nowhere for a guest.
-      if (input.firstThread) {
-        try {
-          await store.addShare(token.id, {
-            thread_id: input.firstThread.thread_id,
-            project_id: input.firstThread.project_id,
-            perm: input.firstThread.perm,
-          });
-          // Re-read so the returned token carries the new share.
-          token = (await store.getToken(token.id)) ?? token;
-        } catch (err) {
-          throw mapStoreError(err);
-        }
+      let token: StoredToken;
+      let rawToken: string;
+      try {
+        ({ token, rawToken } = await mutateShares(async () => {
+          let minted = await store.mintToken({ label: input.label });
+          rawTokenById.set(minted.token.id, minted.rawToken);
+          // A new link and its initial share become durable together.
+          if (input.firstThread) {
+            await store.addShare(minted.token.id, {
+              thread_id: input.firstThread.thread_id,
+              project_id: input.firstThread.project_id,
+              perm: input.firstThread.perm,
+            });
+            minted = {
+              ...minted,
+              token: (await store.getToken(minted.token.id)) ?? minted.token,
+            };
+          }
+          return minted;
+        }));
+      } catch (err) {
+        throw mapStoreError(err);
       }
       // Lazy first-deploy (SPEC §"Worker lifecycle"): the first mint triggers
       // the worker deploy. ensureDeployed dedupes and swallows deploy errors,
@@ -330,7 +364,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     async renameToken(input) {
       try {
-        await store.renameToken(input.id, input.label);
+        await mutateShares(() => store.renameToken(input.id, input.label));
       } catch (err) {
         throw mapStoreError(err);
       }
@@ -340,23 +374,24 @@ export default async function plugin(bb: BbPluginApi) {
 
     async deleteToken(input) {
       try {
-        await store.deleteToken(input.id);
+        await mutateShares(async () => {
+          await store.deleteToken(input.id);
+          rawTokenById.delete(input.id);
+        });
       } catch (err) {
         throw mapStoreError(err);
       }
-      // Drop the cached raw token with the record (issue 32).
-      rawTokenById.delete(input.id);
       emitTokensChanged();
       return { ok: true as const };
     },
 
     async addShare(input) {
       try {
-        await store.addShare(input.token_id, {
+        await mutateShares(() => store.addShare(input.token_id, {
           thread_id: input.thread_id,
           project_id: input.project_id,
           perm: input.perm,
-        });
+        }));
       } catch (err) {
         throw mapStoreError(err);
       }
@@ -366,7 +401,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     async removeShare(input) {
       try {
-        await store.removeShare(input.token_id, input.thread_id);
+        await mutateShares(() => store.removeShare(input.token_id, input.thread_id));
       } catch (err) {
         throw mapStoreError(err);
       }
@@ -376,7 +411,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     async updateShare(input) {
       try {
-        await store.updateShare(input.token_id, input.thread_id, input.perm);
+        await mutateShares(() => store.updateShare(input.token_id, input.thread_id, input.perm));
       } catch (err) {
         throw mapStoreError(err);
       }

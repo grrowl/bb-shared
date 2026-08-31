@@ -1,21 +1,20 @@
 // bb-shared token store (issue 05).
 //
-// In-memory only in v0. The `Store` interface exposes async methods so a
-// persistent backend (SQLite, etc.) can slot in later without touching call
-// sites. See SPEC.md §"Data model (in-memory only)".
+// The active store remains in memory for fast authorization. Its encrypted
+// durable snapshot is owned by `share-state-record.ts` and restores it after
+// a plugin or app restart.
 //
 // Security note (per ticket 05, refining SPEC.md):
-// - The raw token is generated once, returned to the caller as `rawToken`, and
-//   then discarded. Nothing in the store persists it.
+// - The raw token is generated once and used as the guest bearer. The active
+//   store never exposes it; the owner-only durable snapshot encrypts it with a
+//   device-bound key so existing links can survive restarts.
 // - `Token.hash = HMAC-SHA256(rawToken)` (base64url) is what the store keeps
 //   as the comparison key; the HMAC secret is per-process and regenerated on
-//   every plugin start (guest URLs die on restart — consistent with the SPEC's
-//   in-memory posture).
+//   every plugin start from the encrypted raw-token snapshot.
 // - `Token.id` is a short non-secret public handle (`bbsh_<12>`) used to
 //   reference tokens in RPC methods (rename, delete, addShare, ...). This
-//   trades off exactly matching SPEC's "id: bbsh_ + 32B base64url" byte-count
-//   for the ticket's "raw token never persisted" invariant — the SPEC's field
-//   name and prefix are preserved.
+//   keeps a short public handle while raw bearer tokens live only in the
+//   owner-only encrypted share-state record.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -43,7 +42,7 @@ export interface Token {
 export interface MintResult {
   /** The stored token record. Safe to return over RPC. */
   token: Token;
-  /** The raw bearer token — returned ONCE, never persisted. */
+  /** The raw bearer token — returned only to owner-side server code. */
   rawToken: string;
 }
 
@@ -51,6 +50,20 @@ export interface AddShareInput {
   thread_id: string;
   project_id: string;
   perm: Perm;
+}
+
+/**
+ * The minimum durable form of a shared link. Its raw token is a bearer secret;
+ * callers must encrypt the complete snapshot before writing it to disk.
+ * `hash` is deliberately omitted: a fresh per-process HMAC rebuilds it when
+ * the snapshot is opened, so the HMAC key itself never needs persistence.
+ */
+export interface TokenSnapshot {
+  id: string;
+  label: string;
+  shares: Share[];
+  created_at: number;
+  rawToken: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,14 +203,16 @@ export function pickUniqueLabel(
 
 export interface InMemoryStoreOptions {
   /**
-   * HMAC key for hashing raw tokens. Per SPEC, per-process and in-memory only —
-   * generated fresh at plugin start. Tests may inject a fixed key.
+   * HMAC key for hashing raw tokens. It is generated fresh at plugin start;
+   * durable raw-token snapshots rebuild all hashes. Tests may inject a key.
    */
   hmacKey?: Buffer;
   /** RNG override for label generation (deterministic tests). */
   rng?: () => number;
   /** Clock override (deterministic tests). Returns ms epoch. */
   now?: () => number;
+  /** Encrypted durable state, already validated by its owning record store. */
+  initialTokens?: TokenSnapshot[];
 }
 
 export class InMemoryStore implements Store {
@@ -210,6 +225,15 @@ export class InMemoryStore implements Store {
     this.hmacKey = opts.hmacKey ?? randomBytes(32);
     this.rng = opts.rng ?? Math.random;
     this.now = opts.now ?? (() => Date.now());
+    for (const saved of opts.initialTokens ?? []) {
+      this.tokens.set(saved.id, {
+        id: saved.id,
+        hash: hashToken(this.hmacKey, saved.rawToken),
+        label: saved.label,
+        shares: saved.shares.map((share) => ({ ...share })),
+        created_at: saved.created_at,
+      });
+    }
   }
 
   async mintToken(opts: { label?: string; nowMs?: number } = {}): Promise<MintResult> {
@@ -309,6 +333,12 @@ export class InMemoryStore implements Store {
     if (!share) throw new ShareNotFoundError(token_id, thread_id);
     share.perm = perm;
   }
+
+  /** Restore an in-memory snapshot when its durable write failed. */
+  restoreTokens(tokens: Token[]): void {
+    this.tokens.clear();
+    for (const token of tokens) this.tokens.set(token.id, cloneToken(token));
+  }
 }
 
 function cloneToken(t: Token): Token {
@@ -361,9 +391,8 @@ export function buildShareUrl(
 // ---------------------------------------------------------------------------
 // Wire projection (issue 32). `listTokens` and `mintToken` return each token
 // enriched with a resolved title per share and the session's guest URL. Both
-// derivations are pure and live here so a single unit test pins the shape; the
-// store never persists titles or the raw token — the caller (server.ts) holds
-// the raw token in memory for the session only.
+// derivations are pure and live here so a single unit test pins the shape. The
+// caller owns the raw token map, rehydrated from encrypted share state.
 // ---------------------------------------------------------------------------
 
 export interface EnrichedShare extends Share {
@@ -376,15 +405,13 @@ export interface EnrichedShare extends Share {
 export interface EnrichedToken extends Omit<Token, "shares"> {
   shares: EnrichedShare[];
   /**
-   * The guest link, present while the raw token is still held in memory this
-   * session (Copy link, SPEC surface 4). Absent once the raw token is gone —
-   * every listed token is from this session, so in practice it is always set.
+   * The guest link, rebuilt from the owner-only encrypted bearer state.
    */
   url?: string;
 }
 
 export interface EnrichTokenDeps {
-  /** The raw bearer token for this id, if still cached this session. */
+  /** The raw bearer token for this id, loaded from encrypted share state. */
   rawToken?: string;
   /** Deployed worker origin passed through to `buildShareUrl`. */
   workerOrigin?: string;

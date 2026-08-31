@@ -908,9 +908,8 @@ export function TokensPanel(_props: PluginNavPanelProps) {
             />
             <ClaimWorkerNotice claimUrl={claimUrl} />
             <p className="text-xs text-muted-foreground">
-              Shared thread secrets are not stored on disk for security, so
-              shared thread state disappears when you restart bb or this
-              plugin.
+              Shared links are stored securely on this device, so they stay
+              active when you restart bb or this plugin.
             </p>
           </div>
         </div>

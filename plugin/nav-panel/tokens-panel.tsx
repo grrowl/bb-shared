@@ -226,7 +226,7 @@ function describeWorker(
  * `claim.url` is a bearer credential — never shown to guests, and we open it
  * via the host's browser preference rather than rendering it as raw text.
  */
-function ClaimWorkerButton({ claimUrl }: { claimUrl: string | undefined }) {
+function ClaimWorkerNotice({ claimUrl }: { claimUrl: string | undefined }) {
   const navigate = useBbNavigate();
 
   // The claim URL is a bearer credential, so it is never rendered as text or
@@ -234,14 +234,18 @@ function ClaimWorkerButton({ claimUrl }: { claimUrl: string | undefined }) {
   if (claimUrl === undefined) return null;
 
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={() => navigate.openUrl(claimUrl)}
-      className="h-7 px-2 text-xs"
-    >
-      Keep this worker in Cloudflare
-    </Button>
+    <p className="text-xs text-muted-foreground">
+      bb-shared uses temporary Cloudflare workers to share your sessions. If
+      you do not claim your worker, it will be cleaned up after 60 minutes and
+      will need to be recreated, losing your shared links. {" "}
+      <button
+        type="button"
+        onClick={() => navigate.openUrl(claimUrl)}
+        className="font-semibold text-foreground underline underline-offset-2 hover:text-foreground/80"
+      >
+        Claim your worker
+      </button>
+    </p>
   );
 }
 
@@ -253,7 +257,7 @@ function RecreateWorkerButton({ onError }: { onError: (message: string) => void 
     try { await rpc.call("recreateWorker", null); }
     catch (err) { onError(errorText(err)); }
     finally { setBusy(false); }
-  })()} className="h-7 px-2 text-xs">{busy ? "Recreating…" : "Recreate worker"}</Button>;
+  })()} className="h-7 px-2 text-xs">{busy ? "Recreating…" : "Recreate"}</Button>;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,11 +684,10 @@ export function TokensPanel(_props: PluginNavPanelProps) {
                 state={worker.state}
                 hasShares={(tokens?.length ?? 0) > 0}
               />
-              <ClaimWorkerButton claimUrl={claimUrl} />
               <RecreateWorkerButton onError={setActionError} />
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">Cloudflare keeps a claimed worker, but bb-shared cannot confirm completion. Recreating gives a new hostname: previously copied links target the old worker. The old claimed worker is not deleted and may need manual Cloudflare cleanup.</p>
+          <ClaimWorkerNotice claimUrl={claimUrl} />
           {worker.state.kind === "ready" && !worker.state.status.healthy && worker.state.status.fault ? (
             <p className="text-xs text-destructive">{worker.state.status.fault}</p>
           ) : null}

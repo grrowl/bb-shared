@@ -63,16 +63,16 @@ directory.
 git clone https://github.com/grrowl/bb-shared.git
 cd bb-shared
 npm install
-(cd worker && npm install)
 bb plugin install path:"$PWD" --yes
 ```
 
-Then, to check and rebuild a change:
+Then, to check and rebuild a change. `npm test` at the root covers the
+plugin and the worker; each has its own typecheck.
 
 ```sh
 npm run typecheck
+(cd worker && npm run typecheck)
 npm test
-(cd worker && npm run typecheck && npm test)
 bb plugin build .
 bb plugin reload shared
 ```

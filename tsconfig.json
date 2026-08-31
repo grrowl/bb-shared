@@ -14,21 +14,21 @@
     ],
     "paths": {
       "@/*": [
-        "./*"
+        "./plugin/*"
       ]
     },
     "noEmit": true,
     "skipLibCheck": false
   },
   "include": [
-    "server.ts",
-    "app.tsx",
-    "authz",
-    "components",
-    "lib",
-    "hooks",
-    "share-popover",
-    "nav-panel",
-    "worker-lifecycle"
+    "plugin/server.ts",
+    "plugin/app.tsx",
+    "plugin/authz",
+    "plugin/components",
+    "plugin/lib",
+    "plugin/hooks",
+    "plugin/share-popover",
+    "plugin/nav-panel",
+    "plugin/worker-lifecycle"
   ]
 }

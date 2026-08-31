@@ -251,9 +251,26 @@ function describeWorker(
  */
 function ClaimWorkerNotice({ claimUrl }: { claimUrl: string | undefined }) {
   const navigate = useBbNavigate();
+  const [copyState, setCopyState] = React.useState<"idle" | "copied" | "failed">("idle");
+
+  const copyClaimUrl = React.useCallback(async () => {
+    if (claimUrl === undefined) return;
+    const clipboard = globalThis.navigator?.clipboard;
+    if (clipboard === undefined) {
+      setCopyState("failed");
+      return;
+    }
+    try {
+      await clipboard.writeText(claimUrl);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+    window.setTimeout(() => setCopyState("idle"), FLASH_MS);
+  }, [claimUrl]);
 
   // The claim URL is a bearer credential, so it is never rendered as text or
-  // sent to guests. It is opened through the host browser on explicit action.
+  // sent to guests. It is opened or copied only through an explicit owner action.
   if (claimUrl === undefined) return null;
 
   return (
@@ -267,6 +284,18 @@ function ClaimWorkerNotice({ claimUrl }: { claimUrl: string | undefined }) {
         className="font-semibold text-foreground underline underline-offset-2 hover:text-foreground/80"
       >
         Claim your worker
+      </button>
+      <span aria-hidden> · </span>
+      <button
+        type="button"
+        onClick={() => void copyClaimUrl()}
+        className="font-semibold text-foreground underline underline-offset-2 hover:text-foreground/80"
+      >
+        {copyState === "copied"
+          ? "Copied"
+          : copyState === "failed"
+            ? "Couldn’t copy"
+            : "Copy URL"}
       </button>
     </p>
   );

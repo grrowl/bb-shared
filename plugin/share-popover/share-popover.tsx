@@ -235,8 +235,8 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   }, [navigate, onClose]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-baseline justify-between">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-medium">Share this thread</h3>
         {flash !== null ? (
           <span className="text-xs text-muted-foreground" role="status">
@@ -308,7 +308,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
             <button
               type="button"
               onClick={handleManageAll}
-              className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-muted-foreground/80"
             >
               Manage all links
             </button>

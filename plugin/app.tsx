@@ -25,7 +25,9 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "tokens",
     title: "Shared threads",
-    icon: "Share",
+    // BB does not expose a `Share` sidebar glyph. `Sent` is its built-in
+    // paper-plane/share glyph; an unknown `Share` name falls back to Zap.
+    icon: "Sent",
     path: "tokens",
     component: TokensPanel,
   });

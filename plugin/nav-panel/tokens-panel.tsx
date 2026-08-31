@@ -50,6 +50,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "./alert-dialog.js";
 
 // `getWorkerStatus` is stubbed to throw "not implemented" until issue 07 wires
@@ -294,15 +295,68 @@ function WorkerHostname({ url }: { url: string | undefined }) {
   );
 }
 
-function RecreateWorkerButton({ onError }: { onError: (message: string) => void }) {
+function RecreateWorkerButton({
+  online,
+  onError,
+}: {
+  online: boolean;
+  onError: (message: string) => void;
+}) {
   const rpc = useRpc<typeof rpcContract>();
   const [busy, setBusy] = React.useState(false);
-  return <Button variant="outline" size="sm" disabled={busy} onClick={() => void (async () => {
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const recreate = React.useCallback(async () => {
     setBusy(true);
-    try { await rpc.call("recreateWorker", null); }
+    try {
+      await rpc.call("recreateWorker", null);
+      setConfirmOpen(false);
+    }
     catch (err) { onError(errorText(err)); }
     finally { setBusy(false); }
-  })()} className="h-7 px-2 text-xs">{busy ? "Recreating…" : "Recreate"}</Button>;
+  }, [onError, rpc]);
+
+  const button = (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      onClick={online ? undefined : () => void recreate()}
+      className="h-7 px-2 text-xs"
+    >
+      {busy ? "Recreating…" : "Recreate"}
+    </Button>
+  );
+
+  if (!online) return button;
+
+  return (
+    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <AlertDialogTrigger asChild>{button}</AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Recreate this worker?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This worker is online. Recreating it gives you a new hostname, and
+            while existing shared links will still work, we&apos;ll stop monitoring
+            the old worker. The new worker will need to be claimed to stay
+            online.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={busy}
+            onClick={(event) => {
+              event.preventDefault();
+              void recreate();
+            }}
+          >
+            {busy ? "Recreating…" : "Recreate"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -731,8 +785,11 @@ export function TokensPanel(_props: PluginNavPanelProps) {
                 hasShares={(tokens?.length ?? 0) > 0}
                 onOpenWorker={(url) => navigate.openUrl(url)}
               />
-              {worker.state.kind === "ready" && !worker.state.status.healthy ? (
-                <RecreateWorkerButton onError={setActionError} />
+              {worker.state.kind === "ready" ? (
+                <RecreateWorkerButton
+                  online={worker.state.status.healthy}
+                  onError={setActionError}
+                />
               ) : null}
             </div>
           </div>

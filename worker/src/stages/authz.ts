@@ -24,6 +24,7 @@
  */
 
 import { jsonError } from "../errors.js";
+import { sharedThreadNotFoundPage } from "../guest-error-page.js";
 import { cont, respond, type RequestContext, type Stage } from "../pipeline.js";
 import type { GuestScope, ThreadPerm } from "../scope.js";
 import type { TunnelRouter } from "../tunnel/interface.js";
@@ -96,13 +97,7 @@ function scopeDenied(reason?: string): Response {
 
 /** A denied SPA/HTML route answers 404 — the guest sees not-found, not JSON. */
 function htmlNotFound(): Response {
-  return new Response("Not found\n", {
-    status: 404,
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
+  return sharedThreadNotFoundPage();
 }
 
 /** Deny with the right status for the path kind: 403 for API, 404 for HTML. */

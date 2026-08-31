@@ -12,6 +12,7 @@
  */
 
 import { jsonError } from "../errors.js";
+import { acceptsHtml, sharedLinkRequiredPage } from "../guest-error-page.js";
 import { cont, respond, type Stage } from "../pipeline.js";
 import { parseCookieHeader } from "../cookie.js";
 import { extractToken } from "../token.js";
@@ -22,6 +23,12 @@ export const extractTokenStage: Stage = {
     const cookies = parseCookieHeader(ctx.request.headers.get("cookie"));
     const extracted = extractToken(ctx.url, cookies);
     if (extracted === null) {
+      // Keep the 401 JSON response for non-browser callers: the plugin uses
+      // this exact response to check worker health. A person opening the bare
+      // worker hostname, however, should get a useful page instead of JSON.
+      if (ctx.url.pathname === "/" && acceptsHtml(ctx.request)) {
+        return respond(sharedLinkRequiredPage());
+      }
       return respond(
         jsonError(401, {
           error: "token_missing",

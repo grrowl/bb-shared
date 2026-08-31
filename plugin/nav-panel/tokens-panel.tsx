@@ -149,19 +149,41 @@ function useClaimUrl(): string | undefined {
 function WorkerStatusPill({
   state,
   hasShares,
+  onOpenWorker,
 }: {
   state: WorkerState;
   hasShares: boolean;
+  onOpenWorker: (url: string) => void;
 }) {
   const { label, dotClass, title } = describeWorker(state, hasShares);
+  const url = state.kind === "ready" ? state.status.url : undefined;
+  const content = <>
+    <span className={cn("size-2 rounded-full", dotClass)} aria-hidden />
+    {label}
+  </>;
+  const className = "inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2.5 py-1 text-xs text-muted-foreground";
+
+  if (url !== undefined) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenWorker(url)}
+        className={`${className} hover:bg-state-hover hover:text-foreground`}
+        title={url}
+        aria-label={`Open worker ${url}`}
+      >
+        {content}
+      </button>
+    );
+  }
+
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2.5 py-1 text-xs text-muted-foreground"
+      className={className}
       title={title}
       role="status"
     >
-      <span className={cn("size-2 rounded-full", dotClass)} aria-hidden />
-      {label}
+      {content}
     </span>
   );
 }
@@ -244,6 +266,29 @@ function ClaimWorkerNotice({ claimUrl }: { claimUrl: string | undefined }) {
         className="font-semibold text-foreground underline underline-offset-2 hover:text-foreground/80"
       >
         Claim your worker
+      </button>
+    </p>
+  );
+}
+
+function WorkerHostname({ url }: { url: string | undefined }) {
+  const navigate = useBbNavigate();
+  if (url === undefined) return null;
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      Worker: {" "}
+      <button
+        type="button"
+        onClick={() => navigate.openUrl(url)}
+        className="font-mono text-foreground underline underline-offset-2 hover:text-foreground/80"
+      >
+        {hostname}
       </button>
     </p>
   );
@@ -651,6 +696,7 @@ export function TokenCard({
 // ---------------------------------------------------------------------------
 
 export function TokensPanel(_props: PluginNavPanelProps) {
+  const navigate = useBbNavigate();
   const { tokens, error, refetch } = useTokens();
   const worker = useWorkerStatus();
   const claimUrl = useClaimUrl();
@@ -683,8 +729,11 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               <WorkerStatusPill
                 state={worker.state}
                 hasShares={(tokens?.length ?? 0) > 0}
+                onOpenWorker={(url) => navigate.openUrl(url)}
               />
-              <RecreateWorkerButton onError={setActionError} />
+              {worker.state.kind === "ready" && !worker.state.status.healthy ? (
+                <RecreateWorkerButton onError={setActionError} />
+              ) : null}
             </div>
           </div>
           {worker.state.kind === "ready" && !worker.state.status.healthy && worker.state.status.fault ? (
@@ -736,7 +785,14 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               ))}
             </ul>
           )}
-          <div className="mt-4">
+          <div className="mt-4 flex flex-col gap-2">
+            <WorkerHostname
+              url={
+                worker.state.kind === "ready"
+                  ? worker.state.status.url
+                  : undefined
+              }
+            />
             <ClaimWorkerNotice claimUrl={claimUrl} />
           </div>
         </div>

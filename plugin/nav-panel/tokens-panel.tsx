@@ -687,7 +687,6 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               <RecreateWorkerButton onError={setActionError} />
             </div>
           </div>
-          <ClaimWorkerNotice claimUrl={claimUrl} />
           {worker.state.kind === "ready" && !worker.state.status.healthy && worker.state.status.fault ? (
             <p className="text-xs text-destructive">{worker.state.status.fault}</p>
           ) : null}
@@ -737,6 +736,9 @@ export function TokensPanel(_props: PluginNavPanelProps) {
               ))}
             </ul>
           )}
+          <div className="mt-4">
+            <ClaimWorkerNotice claimUrl={claimUrl} />
+          </div>
         </div>
       </div>
     </div>

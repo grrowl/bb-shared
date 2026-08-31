@@ -27,7 +27,7 @@
 // `/plugins/shared/tokens` at runtime.
 import * as React from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Copy01Icon, Share08Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Share08Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import {
   useBbNavigate,
   useRealtime,
@@ -89,6 +89,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   // The one row whose segment change is in flight; its segment is disabled
   // until the RPC settles so a double-tap can't race two mutations.
   const [busyTokenId, setBusyTokenId] = React.useState<string | null>(null);
+  const [copiedTokenId, setCopiedTokenId] = React.useState<string | null>(null);
   const [flash, setFlash] = React.useState<string | null>(null);
   const [minting, setMinting] = React.useState(false);
 
@@ -178,12 +179,16 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   );
 
   const copyUrl = React.useCallback(
-    async (url: string | undefined) => {
+    async (tokenId: string, url: string | undefined) => {
       if (url === undefined) return;
       const clipboard = globalThis.navigator?.clipboard;
       if (clipboard !== undefined) {
         try {
           await clipboard.writeText(url);
+          setCopiedTokenId(tokenId);
+          window.setTimeout(() => {
+            setCopiedTokenId((current) => current === tokenId ? null : current);
+          }, FLASH_MS);
           showFlash("Link copied.");
           return;
         } catch {
@@ -286,11 +291,15 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
                           variant="ghost"
                           size="icon"
                           disabled={existing?.url === undefined}
-                          onClick={() => void copyUrl(existing?.url)}
+                          onClick={() => void copyUrl(token.id, existing?.url)}
                           className="size-5 shrink-0 text-muted-foreground hover:text-foreground"
                           aria-label={`Copy ${token.label} URL for this thread`}
                         >
-                          <HugeiconsIcon icon={Copy01Icon} className="size-3" aria-hidden />
+                          <HugeiconsIcon
+                            icon={copiedTokenId === token.id ? Tick02Icon : Copy01Icon}
+                            className="size-3"
+                            aria-hidden
+                          />
                         </Button>
                       </span>
                     </div>

@@ -3,17 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "license": "MIT",
-  "description": "bb-shared CF Worker: gates guest browsers on tokens, proxies to the owner's local bb over the shared tunnel.",
+  "description": "Stable HTTP and WebSocket transport for the local BB guest gateway.",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.integration.json",
+    "test": "vitest run",
+    "build": "node build.mjs",
+    "pretest": "npm run build"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260825.1",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0",
-    "wrangler": "^4.102.0"
+    "wrangler": "^4.102.0",
+    "miniflare": "5.20260825.0-alpha"
   }
 }

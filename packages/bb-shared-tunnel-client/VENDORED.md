@@ -21,11 +21,13 @@ reconnect backoff, error humanization).
 
 ## Local modifications
 
-Exactly one, mechanical: the `@bb/tunnel-contract` import specifier in
-`headers.ts` and `session.ts` was rewritten to `@bb-shared/tunnel-contract`
-(our vendored copy). Otherwise byte-for-byte.
+The contract import uses `@bb-shared/tunnel-contract`. The session now enforces
+bounded concurrent streams, body sizes, pending WebSocket data, and receive
+deadlines. Invalid frame metadata and duplicate stream transitions close the
+relay connection. Logs omit request queries and transport error bodies.
 
 ## Sync policy
 
-Copy the six files verbatim on a bb version bump, then re-apply the single
-import rewrite above. Keep in step with `@bb-shared/tunnel-contract`.
+Review upstream transport changes and reapply these local trust-boundary limits.
+Do not overwrite the session verbatim when updating BB. Keep the binary frame
+format in step with `@bb-shared/tunnel-contract` and run the full-stack tests.

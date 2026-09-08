@@ -29,6 +29,7 @@
     "hooks",
     "share-popover",
     "nav-panel",
-    "worker-lifecycle"
+    "worker-lifecycle",
+    "guest-gateway"
   ]
 }

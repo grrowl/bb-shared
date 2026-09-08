@@ -20,5 +20,6 @@
       ]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["tests/full-stack-runtime.test.ts"]
 }

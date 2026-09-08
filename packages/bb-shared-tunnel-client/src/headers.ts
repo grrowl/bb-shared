@@ -4,6 +4,8 @@ const SKIP_REQUEST_HEADERS = new Set(["host", "content-length", "connection"]);
 
 interface LoopbackHeaderRewrite {
   publicOrigin: string;
+  /** Guest gateways validate the original browser Origin themselves. */
+  preserveOrigin?: boolean;
   loopbackOrigin: string;
   /**
    * When set, inject a Host header (share streams). When omitted, Host is
@@ -21,7 +23,7 @@ export function headersForLoopbackRequest(
     const lowerName = name.toLowerCase();
     if (SKIP_REQUEST_HEADERS.has(lowerName)) continue;
     forwarded[name] =
-      lowerName === "origin" && value === rewrite.publicOrigin
+      !rewrite.preserveOrigin && lowerName === "origin" && value === rewrite.publicOrigin
         ? rewrite.loopbackOrigin
         : value;
   }

@@ -31,6 +31,8 @@
 
 import type { Env } from "../env.js";
 import {
+  PROTOCOL_VERSION,
+  TUNNEL_PROTOCOL_QUERY_PARAM,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
   decodeFrame,
@@ -162,11 +164,6 @@ export class TunnelDO {
     if (url.pathname === "/__tunnel") {
       return this.acceptTunnel(request);
     }
-    // Reserve `/__` for internal tunnel routes; everything else is guest
-    // traffic to be proxied.
-    if (url.pathname.startsWith("/__")) {
-      return text("bb-shared: not found\n", 404);
-    }
     return this.proxyGuestRequest(request, url);
   }
 
@@ -181,6 +178,10 @@ export class TunnelDO {
     }
     if (!timingSafeEqual(secret, presented)) {
       return text("bb-shared tunnel: invalid credential\n", 401);
+    }
+
+    if (new URL(request.url).searchParams.get(TUNNEL_PROTOCOL_QUERY_PARAM) !== String(PROTOCOL_VERSION)) {
+      return text(`bb-shared tunnel: unsupported relay protocol; expected v=${PROTOCOL_VERSION}\n`, 426);
     }
 
     // Single tunnel per worker: a fresh dial replaces any previous socket.

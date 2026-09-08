@@ -8,6 +8,7 @@ import {
 import { request as httpsRequest } from "node:https";
 import { WebSocket as NodeWebSocket } from "ws";
 import {
+  MAX_CHUNK_BYTES,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
   chunkBody,
@@ -20,6 +21,24 @@ import {
 } from "@bb-shared/tunnel-contract";
 import { headersForLoopbackRequest } from "./headers.js";
 import type { TunnelClientLogger } from "./logger.js";
+
+const MAX_STREAMS = 128;
+const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+const MAX_WS_BUFFER_BYTES = 1024 * 1024;
+const BODY_RECEIVE_TIMEOUT_MS = 30_000;
+
+function validateOpenFrame(frame: OpenHttpFrame | OpenWsFrame): void {
+  if (typeof frame.path !== "string" || !frame.path.startsWith("/") || frame.path.startsWith("//")
+    || frame.path.length > 16_384 || /[\\\r\n\0]/u.test(frame.path)
+    || !Array.isArray(frame.headers) || frame.headers.length > 128
+    || frame.headers.some((pair) => !Array.isArray(pair) || pair.length !== 2 || pair.some((value) => typeof value !== "string" || /[\r\n\0]/u.test(value)))
+    || frame.headers.reduce((bytes, pair) => bytes + pair[0].length + pair[1].length, 0) > 32_768
+    || (frame.type === "open-http" && (typeof frame.method !== "string" || !/^[A-Z]{1,20}$/u.test(frame.method) || typeof frame.hasBody !== "boolean"))
+    || (frame.type === "open-ws" && (!Array.isArray(frame.protocols) || frame.protocols.length > 16 || frame.protocols.some((value) => typeof value !== "string" || value.length > 256)))) {
+    throw new Error("invalid stream metadata");
+  }
+}
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const HEARTBEAT_DEADLINE_MS = 60_000;
@@ -106,11 +125,15 @@ export function isBareBbRealtimeWs(
 interface HttpStream {
   meta: OpenHttpFrame;
   chunks: Buffer[];
+  bytes: number;
+  executing: boolean;
+  bodyTimer?: ReturnType<typeof setTimeout>;
   abort: AbortController;
 }
 interface WsStream {
   socket: NodeWebSocket;
   buffered: Frame[];
+  bufferedBytes: number;
   open: boolean;
   /** Counted toward remoteClients (bare-handle /ws). */
   countsAsRemoteClient: boolean;
@@ -120,6 +143,7 @@ interface ResolvedStreamOrigin {
   /** Fetch/WS base, e.g. `http://127.0.0.1:38886` or a share port. */
   origin: string;
   publicOrigin: string;
+  preserveOrigin?: boolean;
   /** Injected Host for share streams; omitted for bare-handle. */
   host?: string;
 }
@@ -146,6 +170,8 @@ interface TunnelSessionOptions {
 export class TunnelSession {
   private readonly httpStreams = new Map<number, HttpStream>();
   private readonly wsStreams = new Map<number, WsStream>();
+  private bufferedBytes = 0;
+  private disposed = false;
   private lastAck = Date.now();
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private remoteClientCount = 0;
@@ -174,19 +200,25 @@ export class TunnelSession {
         return;
       }
       try {
+        if (data.byteLength > MAX_CHUNK_BYTES + 6) throw new Error("frame too large");
         this.onFrame(decodeFrame(data));
-      } catch (e) {
-        this.options.log.warn(`tunnel bad frame: ${String(e)}`);
+      } catch {
+        this.options.log.warn("tunnel rejected malformed relay frame");
+        this.dispose();
+        tunnel.terminate();
       }
     });
     tunnel.on("close", () => this.dispose());
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
-    for (const s of this.httpStreams.values()) s.abort.abort();
+    for (const s of this.httpStreams.values()) { clearTimeout(s.bodyTimer); s.abort.abort(); }
     for (const s of this.wsStreams.values())
-      s.socket.close(1001, "tunnel closed");
+      s.socket.terminate();
+    this.bufferedBytes = 0;
     this.httpStreams.clear();
     this.wsStreams.clear();
     this.setRemoteClients(0);
@@ -211,32 +243,67 @@ export class TunnelSession {
   }
 
   private send(frame: Frame): void {
-    if (this.options.tunnel.readyState === NodeWebSocket.OPEN) {
+    if (!this.disposed && this.options.tunnel.readyState === NodeWebSocket.OPEN) {
+      if (this.options.tunnel.bufferedAmount > MAX_BUFFERED_BYTES) {
+        this.dispose(); this.options.tunnel.terminate(); return;
+      }
       this.options.tunnel.send(encodeFrame(frame));
     }
   }
 
   private onFrame(frame: Frame): void {
+    if (this.disposed) return;
     this.noteActivity();
+    if (!Number.isInteger(frame.streamId) || frame.streamId < 0 || frame.streamId > 0xffffffff) throw new Error("invalid stream id");
+    if (frame.type === "open-http" || frame.type === "open-ws") {
+      validateOpenFrame(frame);
+      if (this.httpStreams.has(frame.streamId) || this.wsStreams.has(frame.streamId)) throw new Error("duplicate stream");
+      if (this.httpStreams.size + this.wsStreams.size >= MAX_STREAMS) {
+        this.send({ type: "close-stream", streamId: frame.streamId, code: 1013, reason: "Tunnel capacity reached" });
+        return;
+      }
+      if (this.options.resolveOrigin(frame.target).kind === "unregistered") {
+        if (frame.type === "open-http") this.rejectUnregisteredHttp(frame.streamId);
+        else this.send({ type: "close-stream", streamId: frame.streamId, code: 1008, reason: UNREGISTERED_PORT_BODY });
+        return;
+      }
+    }
     switch (frame.type) {
       case "open-http": {
         const stream: HttpStream = {
           meta: frame,
           chunks: [],
+          bytes: 0,
+          executing: false,
           abort: new AbortController(),
         };
         this.httpStreams.set(frame.streamId, stream);
         if (!frame.hasBody) void this.executeHttp(frame.streamId, stream);
+        else {
+          stream.bodyTimer = setTimeout(() => this.rejectHttpStream(frame.streamId, stream, "Request body timed out"), BODY_RECEIVE_TIMEOUT_MS);
+          stream.bodyTimer.unref?.();
+        }
         return;
       }
-      case "body-chunk":
-        this.httpStreams
-          .get(frame.streamId)
-          ?.chunks.push(Buffer.from(frame.data));
+      case "body-chunk": {
+        const stream = this.httpStreams.get(frame.streamId);
+        if (!stream) return;
+        if (stream.executing) throw new Error("body after request complete");
+        if (stream.chunks.length >= 8192 || frame.data.byteLength > MAX_CHUNK_BYTES || stream.bytes + frame.data.byteLength > MAX_REQUEST_BYTES || this.bufferedBytes + frame.data.byteLength > MAX_BUFFERED_BYTES) {
+          this.rejectHttpStream(frame.streamId, stream, "Request body exceeds tunnel limit");
+          return;
+        }
+        stream.chunks.push(Buffer.from(frame.data));
+        stream.bytes += frame.data.byteLength;
+        this.bufferedBytes += frame.data.byteLength;
         return;
+      }
       case "body-end": {
         const s = this.httpStreams.get(frame.streamId);
-        if (s) void this.executeHttp(frame.streamId, s);
+        if (s) {
+          if (s.executing) throw new Error("duplicate body end");
+          void this.executeHttp(frame.streamId, s);
+        }
         return;
       }
       case "open-ws":
@@ -245,7 +312,14 @@ export class TunnelSession {
       case "ws-data": {
         const s = this.wsStreams.get(frame.streamId);
         if (!s) return;
+        if (s.buffered.length >= 4096 || s.bufferedBytes + s.socket.bufferedAmount + frame.data.byteLength > MAX_WS_BUFFER_BYTES || this.bufferedBytes + frame.data.byteLength > MAX_BUFFERED_BYTES) {
+          s.socket.terminate(); this.forgetWsStream(frame.streamId, s);
+          this.send({ type: "close-stream", streamId: frame.streamId, code: 1013, reason: "WebSocket buffer limit reached" });
+          return;
+        }
         if (!s.open) {
+          s.bufferedBytes += frame.data.byteLength;
+          this.bufferedBytes += frame.data.byteLength;
           s.buffered.push(frame);
           return;
         }
@@ -258,12 +332,13 @@ export class TunnelSession {
         const h = this.httpStreams.get(frame.streamId);
         if (h) {
           h.abort.abort();
-          this.httpStreams.delete(frame.streamId);
+          this.forgetHttpStream(frame.streamId, h);
           return;
         }
         const w = this.wsStreams.get(frame.streamId);
         if (w) {
-          w.socket.close(frame.code, frame.reason);
+          const validCode = frame.code === 1000 || (Number.isInteger(frame.code) && frame.code >= 3000 && frame.code <= 4999);
+          w.socket.close(validCode ? frame.code : 1000, typeof frame.reason === "string" ? Buffer.from(frame.reason).subarray(0, 120).toString() : "");
           this.forgetWsStream(frame.streamId, w);
         }
         return;
@@ -274,8 +349,24 @@ export class TunnelSession {
     }
   }
 
+  private forgetHttpStream(streamId: number, stream: HttpStream): void {
+    if (this.httpStreams.get(streamId) !== stream) return;
+    clearTimeout(stream.bodyTimer);
+    this.bufferedBytes -= stream.bytes;
+    stream.chunks = []; stream.bytes = 0;
+    this.httpStreams.delete(streamId);
+  }
+
+  private rejectHttpStream(streamId: number, stream: HttpStream, reason: string): void {
+    stream.abort.abort(); this.forgetHttpStream(streamId, stream);
+    this.send({ type: "close-stream", streamId, code: 1009, reason });
+  }
+
   private forgetWsStream(streamId: number, stream: WsStream): void {
-    if (!this.wsStreams.delete(streamId)) return;
+    if (this.wsStreams.get(streamId) !== stream) return;
+    this.wsStreams.delete(streamId);
+    this.bufferedBytes -= stream.bufferedBytes;
+    stream.buffered = []; stream.bufferedBytes = 0;
     if (stream.countsAsRemoteClient) this.adjustRemoteClients(-1);
   }
 
@@ -295,22 +386,27 @@ export class TunnelSession {
     streamId: number,
     stream: HttpStream,
   ): Promise<void> {
+    if (stream.executing) throw new Error("request already executing");
+    stream.executing = true;
+    clearTimeout(stream.bodyTimer);
     const { meta } = stream;
     const originResult = this.options.resolveOrigin(meta.target);
     if (originResult.kind === "unregistered") {
       this.rejectUnregisteredHttp(streamId);
-      this.httpStreams.delete(streamId);
+      this.forgetHttpStream(streamId, stream);
       return;
     }
     const { resolved } = originResult;
+    try {
     const headers = headersForLoopbackRequest(meta.headers, {
       publicOrigin: resolved.publicOrigin,
+      preserveOrigin: resolved.preserveOrigin,
       loopbackOrigin: new URL(resolved.origin).origin,
       ...(resolved.host !== undefined ? { host: resolved.host } : {}),
     });
-    try {
       const startedAt = performance.now();
       const body = meta.hasBody ? Buffer.concat(stream.chunks) : undefined;
+      stream.chunks = [];
       const res = await requestOriginHttp({
         url: new URL(`${resolved.origin.replace(/\/$/u, "")}${meta.path}`),
         method: meta.method,
@@ -318,6 +414,7 @@ export class TunnelSession {
         body,
         signal: stream.abort.signal,
       });
+      if (this.httpStreams.get(streamId) !== stream) { res.destroy(); return; }
       const originTtfbMs = performance.now() - startedAt;
       const respHeaders = responseHeaderPairs(res);
       const initialThreadLoad = isInitialThreadLoad(meta.path);
@@ -335,6 +432,7 @@ export class TunnelSession {
       });
       let responseBytes = 0;
       for await (const chunk of res) {
+        if (this.httpStreams.get(streamId) !== stream) { res.destroy(); return; }
         const value =
           chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk));
         responseBytes += value.byteLength;
@@ -346,7 +444,7 @@ export class TunnelSession {
         this.options.log.info?.(
           [
             "bb connect thread load",
-            `path=${meta.path}`,
+            `path=${new URL(meta.path, "http://bb.local").pathname}`,
             `status=${res.statusCode ?? 502}`,
             `originTtfbMs=${roundDurationMs(originTtfbMs)}`,
             `originBodyMs=${roundDurationMs(totalMs - originTtfbMs)}`,
@@ -364,11 +462,11 @@ export class TunnelSession {
           type: "close-stream",
           streamId,
           code: 1011,
-          reason: String(e),
+          reason: "Guest gateway request failed",
         });
       }
     } finally {
-      this.httpStreams.delete(streamId);
+      this.forgetHttpStream(streamId, stream);
     }
   }
 
@@ -387,6 +485,7 @@ export class TunnelSession {
     const wsOrigin = resolved.origin.replace(/^http/, "ws");
     const headers = headersForLoopbackRequest(frame.headers, {
       publicOrigin: resolved.publicOrigin,
+      preserveOrigin: resolved.preserveOrigin,
       loopbackOrigin: new URL(resolved.origin).origin,
       ...(resolved.host !== undefined ? { host: resolved.host } : {}),
     });
@@ -395,19 +494,22 @@ export class TunnelSession {
     try {
       socket = new NodeWebSocket(`${wsOrigin}${frame.path}`, frame.protocols, {
         headers,
+        handshakeTimeout: 15_000,
+        maxPayload: MAX_WS_BUFFER_BYTES,
       });
     } catch (e) {
       this.send({
         type: "close-stream",
         streamId: frame.streamId,
         code: 1011,
-        reason: String(e),
+        reason: "Guest gateway request failed",
       });
       return;
     }
     const stream: WsStream = {
       socket,
       buffered: [],
+      bufferedBytes: 0,
       open: false,
       countsAsRemoteClient,
     };
@@ -415,14 +517,17 @@ export class TunnelSession {
     if (countsAsRemoteClient) this.adjustRemoteClients(1);
 
     socket.on("open", () => {
+      if (this.wsStreams.get(frame.streamId) !== stream) { socket.terminate(); return; }
       stream.open = true;
       this.send({
         type: "ws-open-ack",
         streamId: frame.streamId,
         protocol: socket.protocol || null,
       });
-      for (const b of stream.buffered) this.onFrame(b);
-      stream.buffered = [];
+      const buffered = stream.buffered;
+      this.bufferedBytes -= stream.bufferedBytes;
+      stream.buffered = []; stream.bufferedBytes = 0;
+      for (const b of buffered) this.onFrame(b);
     });
     socket.on("message", (data: Buffer, isBinary: boolean) => {
       this.send({
@@ -435,7 +540,7 @@ export class TunnelSession {
       });
     });
     socket.on("close", (code: number, reason: Buffer) => {
-      if (this.wsStreams.has(frame.streamId)) {
+      if (this.wsStreams.get(frame.streamId) === stream) {
         this.forgetWsStream(frame.streamId, stream);
         this.send({
           type: "close-stream",
@@ -448,7 +553,7 @@ export class TunnelSession {
     socket.on("error", (e: Error) => {
       // Dead share ports surface as socket errors; the subsequent 'close'
       // sends close-stream. Log only — do not throw.
-      this.options.log.warn(`origin ws error on ${frame.path}: ${e.message}`);
+      this.options.log.warn("guest gateway websocket failed");
     });
   }
 }

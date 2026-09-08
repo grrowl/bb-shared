@@ -77,7 +77,7 @@ class FakeWebSocketPair {
   }
 }
 
-const ENV = { TUNNEL_SECRET: "s".repeat(43), AUTHZ_TOKEN: "a" } as Env;
+const ENV = { TUNNEL_SECRET: "s".repeat(43) } as unknown as Env;
 
 function withTunnel(state: FakeState): FakeWs {
   const tunnel = new FakeWs();
@@ -153,15 +153,7 @@ describe("proxy — no tunnel connected", () => {
     expect(res.status).toBe(503);
   });
 
-  it("404s an internal /__ path that is not /__tunnel", async () => {
-    const state = new FakeState();
-    withTunnel(state);
-    const doInstance = makeDO(state);
-    const res = await doInstance.fetch(
-      new Request("https://guests-abc.workers.dev/__secret"),
-    );
-    expect(res.status).toBe(404);
-  });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -493,7 +485,7 @@ describe("acceptTunnel — dial auth", () => {
     const state = new FakeState();
     const doInstance = makeDO(state);
     const res = await doInstance.fetch(
-      new Request("https://guests-abc.workers.dev/__tunnel"),
+      new Request("https://guests-abc.workers.dev/__tunnel?v=1"),
     );
     expect(res.status).toBe(426);
   });
@@ -502,7 +494,7 @@ describe("acceptTunnel — dial auth", () => {
     const state = new FakeState();
     const doInstance = makeDO(state);
     const res = await doInstance.fetch(
-      new Request("https://guests-abc.workers.dev/__tunnel", {
+      new Request("https://guests-abc.workers.dev/__tunnel?v=1", {
         headers: { upgrade: "websocket" },
       }),
     );
@@ -513,7 +505,7 @@ describe("acceptTunnel — dial auth", () => {
     const state = new FakeState();
     const doInstance = makeDO(state);
     const res = await doInstance.fetch(
-      new Request("https://guests-abc.workers.dev/__tunnel", {
+      new Request("https://guests-abc.workers.dev/__tunnel?v=1", {
         headers: { upgrade: "websocket", authorization: "Bearer nope" },
       }),
     );
@@ -535,7 +527,7 @@ describe("acceptTunnel — dial auth", () => {
     // we assert on those rather than the unbuildable 101.)
     await doInstance
       .fetch(
-        new Request("https://guests-abc.workers.dev/__tunnel", {
+        new Request("https://guests-abc.workers.dev/__tunnel?v=1", {
           headers: {
             upgrade: "websocket",
             authorization: `Bearer ${ENV.TUNNEL_SECRET}`,

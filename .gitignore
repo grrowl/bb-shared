@@ -10,3 +10,12 @@ coverage/
 .env.*.local
 .vscode/
 .idea/
+
+# Ship validated artifacts for dependency-light managed Git installs.
+!plugin/dist/
+!plugin/dist/server.js
+!plugin/dist/server.js.map
+!plugin/dist/server.meta.json
+!plugin/dist/app.js
+!plugin/dist/app.css
+!plugin/dist/app.meta.json

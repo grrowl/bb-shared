@@ -2,13 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   filterClientFrame,
   filterServerFrame,
-  wsFrameFilterStage,
   type ClientFrameDecision,
   type ServerFrameDecision,
-} from "../src/stages/ws-frame-filter.js";
-import type { GuestScope } from "../src/scope.js";
-import type { RequestContext } from "../src/pipeline.js";
-import type { TunnelRouter } from "../src/tunnel/interface.js";
+} from "./frames";
+import type { GuestScope } from "./scope";
 
 // Synthetic scope: thread T1 (in project P1) is shared; thread T2 / project P2
 // are NOT. Every case below is stated relative to this scope.
@@ -298,90 +295,3 @@ describe("synthetic streams", () => {
 });
 
 // =========================================================================
-// Stage wiring: terminal reject + pass-through
-// =========================================================================
-
-// The stage never reaches this router for the terminal-reject or non-upgrade
-// paths; dispatch would throw if wrongly invoked, proving those branches short.
-const explodingRouter: TunnelRouter = {
-  acceptTunnelDial: () => {
-    throw new Error("acceptTunnelDial should not be called");
-  },
-  dispatch: () => {
-    throw new Error("dispatch should not be called for this case");
-  },
-};
-
-function ctxFor(pathname: string, headers: Record<string, string>): RequestContext {
-  const url = new URL(`https://guests-abc.workers.dev${pathname}`);
-  return {
-    request: new Request(url, { headers }),
-    url,
-    env: {} as never,
-    ctx: {} as never,
-    workerPublicOrigin: url.origin,
-    token: "bbsh_" + "A".repeat(32),
-    scope: SCOPE,
-    perms: null,
-  };
-}
-
-describe("wsFrameFilterStage — routing", () => {
-  it("rejects a guest terminal WS upgrade with 403", async () => {
-    const stage = wsFrameFilterStage(explodingRouter);
-    const result = await stage.run(
-      ctxFor("/ws/terminals/term-123", { upgrade: "websocket" }),
-    );
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      expect(result.response.status).toBe(403);
-      const body = await result.response.json();
-      expect(body).toMatchObject({ error: "scope" });
-    }
-  });
-
-  it("passes a plain HTTP request straight through (continue)", async () => {
-    const stage = wsFrameFilterStage(explodingRouter);
-    const result = await stage.run(ctxFor("/api/v1/system/config", {}));
-    expect(result.kind).toBe("continue");
-  });
-
-  it("passes a non-upgrade request to /ws through (continue)", async () => {
-    const stage = wsFrameFilterStage(explodingRouter);
-    const result = await stage.run(ctxFor("/ws", {}));
-    expect(result.kind).toBe("continue");
-  });
-
-  it("lets a non-terminal, non-/ws upgrade fall through to dispatch", async () => {
-    const stage = wsFrameFilterStage(explodingRouter);
-    const result = await stage.run(
-      ctxFor("/some/other/ws", { upgrade: "websocket" }),
-    );
-    expect(result.kind).toBe("continue");
-  });
-
-  it("dispatches an in-scope /ws upgrade through the tunnel", async () => {
-    let dispatched = false;
-    const router: TunnelRouter = {
-      acceptTunnelDial: () => {
-        throw new Error("nope");
-      },
-      // Simulate a tunnel that is offline: no webSocket on the response, so the
-      // stage returns it untouched without touching WebSocketPair (unavailable
-      // in the node test pool).
-      dispatch: async () => {
-        dispatched = true;
-        return new Response(JSON.stringify({ error: "tunnel_offline" }), {
-          status: 503,
-        });
-      },
-    };
-    const stage = wsFrameFilterStage(router);
-    const result = await stage.run(ctxFor("/ws", { upgrade: "websocket" }));
-    expect(dispatched).toBe(true);
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      expect(result.response.status).toBe(503);
-    }
-  });
-});

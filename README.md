@@ -1,74 +1,97 @@
 # bb-shared
 
-Share live [bb](https://getbb.app) threads with a scoped, revocable link.
-Guests get the real bb interface, limited to the threads you choose. Each link
-can grant read-only or write access per thread.
+Share live [BB](https://getbb.app) threads through revocable invitations. Guests
+use the BB interface with read or write access to the threads you choose.
 
-## What it does
+## Install and build
 
-- Share one or more threads through a named link.
-- Change access or revoke a link at any time.
-- Give guests a live, scoped bb view; write links can send user messages.
-- Create a temporary Cloudflare Worker automatically. Claim it to keep its
-  stable `workers.dev` hostname after Cloudflare's temporary period.
-- Keep shared links across bb and plugin restarts. Link credentials are stored
-  in an encrypted, device-bound record on the owner's machine.
-
-## Install
-
-Requirements: a current bb installation and Node.js 20 or later.
+Requires BB 0.40 or later and Node.js 20 or later.
 
 ```sh
-git clone https://github.com/grrowl/bb-shared.git
-cd bb-shared
-npm install
-(cd worker && npm install)
-bb plugin build plugin
+npm ci
+npm --prefix worker ci
+npm run build
 bb plugin install path:"$PWD/plugin" --yes
 ```
 
-Open a thread in bb and select **Share this thread**. The first new link
-creates a temporary Cloudflare Worker. Use **Shared threads** in the sidebar to
-see links, their worker, and the claim action.
+The plugin embeds a precompiled relay. Installed sharing does not run Wrangler
+or require a sibling Worker source checkout.
 
-## Worker lifecycle
+## Share a thread
 
-bb-shared does not ask for access to your Cloudflare account. It creates a
-temporary worker instead. Cloudflare may clean up an unclaimed worker after 60
-minutes; **Claim your worker** transfers that temporary account to you and
-keeps its hostname.
+Open **Share this thread**, create an invitation, and choose read or write
+access. In **Manage sharing**, deploy a temporary connection or register an
+existing relay hostname and its pairing secret. Once a connection is ready,
+copy the invitation from the thread popover. Optional audience labels help you
+remember who received each invitation; they do not verify a recipient's identity.
 
-bb-shared cannot confirm whether a claim completed. It keeps checking the
-saved worker and reports it as online or offline. **Recreate** explicitly makes
-a new worker and hostname; existing links keep pointing to the old worker.
+A connection is a public HTTPS hostname tunneling to this BB instance. An
+invitation is a bearer credential granting thread access. Invitations work on
+all connections registered with this instance; the default connection chooses
+the hostname used when copying invitations. A hostname alone grants no access.
 
-## Security model
+Opening another invitation on the same hostname adds its valid permissions to
+the browser session. The strongest current grant wins. Revoked invitations stop
+contributing access, including to open realtime connections. Sessions expire
+after 30 days unless renewed by opening an invitation, and survive plugin
+restarts. Cookies are private to each hostname. Open the first invitations sequentially;
+two simultaneous first opens can race before a session cookie exists. Copy an invitation from the
+owner's sharing UI; the guest's clean address bar URL is not an invitation.
 
-Shared URLs are bearer credentials: anyone who has a link has the access it
-grants until you change or revoke it. The plugin stores those credentials and
-their grants encrypted with a key bound to the owner's device (macOS Keychain
-where available). They are never sent to guests except as the URL they use.
+## Connections and Cloudflare
 
-The Cloudflare Worker enforces scope before proxying to the local bb server.
-It filters guest-visible data and WebSocket traffic, and keeps owner-only bb
-routes and plugin RPCs out of reach.
+BB opens an outbound WebSocket to each relay, so ordinary NAT/CGNAT needs no
+inbound port forwarding. **Ready** means the authenticated tunnel has reached
+this plugin's guest gateway and the gateway can reach BB. Network outages show
+as offline or reconnecting without deleting the saved connection.
 
-This is early software. Do not share threads containing secrets or other data
-you would not want a link recipient to read.
+Temporary Cloudflare accounts must be claimed within 60 minutes to keep their
+resources. Claiming happens in Cloudflare and does not grant the plugin ongoing
+account access. Claim status does not control reconnects. An expired claim window
+is not proof that a saved hostname was deleted.
+
+Self-deploy the Worker using [worker/README.md](worker/README.md), then register
+its hostname and `TUNNEL_SECRET` in connection management. Registration checks
+compatibility, pairing, and the complete tunnel before saving. A custom domain
+works as the canonical registered hostname. Only one connection per relay is
+allowed: remove the existing connection before changing its canonical hostname.
+
+Removing a connection disconnects it locally; it does not delete a Cloudflare
+Worker. Changing the default does not repair old URLs if their hostname is gone.
+If you lose local invitation state, re-registering a relay cannot recover those
+invitations: restore encrypted local storage and its device key, or create new
+invitations.
+
+## Security and compatibility
+
+Every tunneled request passes through a local guest gateway. It authorizes
+thread access, restricts API routes, filters responses and realtime events, and
+prepares the guest UI before proxying to BB. There is no unrestricted tunnel
+fallback to the owner's server. The Worker is a transport relay and holds only
+the pairing secret; it contains no invitation policy or BB plugin API token.
+
+Write invitations support text messages under the owner’s existing execution
+policy; attachments and execution overrides are not supported.
+
+Invitation bearers, browser sessions, grants, and connection credentials are
+stored encrypted with the local device key. Anyone holding an invitation has
+its access until revoked. The relay terminates TLS and can see shared traffic;
+use a relay you trust.
+
+This is a pre-1.0 protocol change. Old policy-bearing Workers and token-in-path
+URLs are unsupported. Deploy the current relay and distribute current query-form
+invitations. Existing local invitation records are retained, but old Worker/OAuth
+records are not imported into the new connection registry.
 
 ## Development
 
 ```sh
-npm exec --workspace=bb-plugin-shared -- tsc -p tsconfig.json --noEmit
-npm exec --workspace=bb-plugin-shared -- vitest run
-(cd worker && npm run typecheck && npm test)
-bb plugin build plugin
-bb plugin reload shared
+npm run typecheck
+npm test
+npm run build
 ```
 
-See [plugin/README.md](plugin/README.md) and [worker/README.md](worker/README.md)
-for component-specific notes.
-
-## License
-
-[MIT](LICENSE)
+Worker tests include actual `workerd` execution. Gateway tests use real HTTP and
+WebSocket connections. See [the design review](docs/1.0-design-review.md) for the
+original findings and [implementation notes](docs/1.0-implementation.md) for the
+current boundaries and remaining release validation.

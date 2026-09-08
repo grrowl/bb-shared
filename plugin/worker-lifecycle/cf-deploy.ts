@@ -1,8 +1,8 @@
 // Cloudflare temporary-worker deploy pipeline.
 //
 // It solves the PoW challenge, provisions an anonymous temporary account, then
-// upload the bundled worker script (with the TunnelDO binding + our two
-// secrets) via a raw multipart PUT → enable the workers.dev route → wait for
+// upload the bundled worker script (with the TunnelDO binding + its tunnel
+// secret) via a raw multipart PUT → enable the workers.dev route → wait for
 // route propagation → resolve the `*.workers.dev` URL.
 //
 // One code path, always temporary. Every deploy provisions a fresh account, so the DO
@@ -14,16 +14,16 @@
 // migration (error 10097), the raw multipart upload that the `cloudflare` SDK
 // v7.1.0 `scripts.update` gets wrong (error 10021), and the ~15 s workers.dev
 // route propagation after the per-script subdomain enable.
+import { isRelayIdentity, RELAY_IDENTITY_PATH } from "@bb-shared/tunnel-contract";
 import { solveChallenge, type PowChallenge } from "./pow";
 
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 const CF_TERMS = "https://www.cloudflare.com/terms/";
 const CF_PRIVACY = "https://www.cloudflare.com/privacypolicy/";
 
-/** The two secret-text env vars the worker expects (worker/README.md). */
+/** Pairing credential; no local BB plugin credentials leave the machine. */
 export const WORKER_ENV = {
   tunnelSecret: "TUNNEL_SECRET",
-  authzToken: "AUTHZ_TOKEN",
 } as const;
 
 export interface DeployInput {
@@ -35,8 +35,6 @@ export interface DeployInput {
   scriptContent: string;
   /** Bearer the local SharedTunnel presents on `/__tunnel` (we mint it). */
   tunnelSecret: string;
-  /** bb per-plugin token the worker presents to the plugin's authz route. */
-  authzToken: string;
   /** DO class re-exported by the worker entry (worker/wrangler.toml). */
   doClassName: string;
   /** DO binding name the worker reads (`env.TUNNEL_DO`). */
@@ -93,7 +91,7 @@ class CfDeployError extends Error {
 // ---------------------------------------------------------------------------
 // Secret redaction (M3, ticket 20).
 //
-// The tunnel secret and authz token are planted as `secret_text` bindings in
+// The tunnel secret is planted as a `secret_text` binding in
 // the `scripts.update` request body. If the `cloudflare` SDK (or a lower-level
 // fetch) throws an error whose message echoes that body, the raw secret would
 // flow into `bb.log` via the deploy error path — breaking tunnel-secret.ts's
@@ -287,7 +285,6 @@ export async function uploadWorkerScript(args: {
         class_name: input.doClassName,
       },
       { type: "secret_text", name: WORKER_ENV.tunnelSecret, text: input.tunnelSecret },
-      { type: "secret_text", name: WORKER_ENV.authzToken, text: input.authzToken },
     ],
     // Always a first-time migration: every deploy is a fresh temp account. Temp
     // accounts are free-plan, where DOs MUST be SQLite-backed — a legacy
@@ -347,15 +344,8 @@ export async function uploadWorkerScript(args: {
 }
 
 // ---------------------------------------------------------------------------
-// Route propagation (research bug 4).
-//
-// Enabling the per-script workers.dev route is not instant — CF needs ~12-15 s
-// to propagate it, during which the URL returns CF's generic 404 page. Probe
-// the URL until it actually serves the worker (any non-404 status: the worker's
-// own `GET /` gate answers 401 `token_missing`, which is the "it's live" signal)
-// so `deployWorker` doesn't hand back a URL that 404s for the first ~15 s. This
-// is a live-API timing contract with no offline analogue; bounded, and if it
-// never comes up we return anyway and the health loop handles a dead worker.
+// Confirm the deployed route serves this relay protocol, not a generic proxy
+// response. Exhaustion is a failed deployment, never a claimed-ready URL.
 // ---------------------------------------------------------------------------
 
 async function waitForRoutePropagation(
@@ -364,22 +354,19 @@ async function waitForRoutePropagation(
   sleep: (ms: number) => Promise<void>,
   probes: number,
   intervalMs: number,
-  log?: DeployOptions["log"],
 ): Promise<void> {
   for (let attempt = 1; attempt <= probes; attempt++) {
     try {
-      const res = await fetchImpl(url, { method: "GET", redirect: "manual" });
-      // A non-404, sub-500 status means the worker script is serving on the
-      // route. 404 is CF's not-yet-propagated page; 5xx is a transient hiccup.
-      if (res.status !== 404 && res.status < 500) return;
+      const res = await fetchImpl(new URL(RELAY_IDENTITY_PATH, url).href, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(5000) });
+      if (res.ok && isRelayIdentity(await res.json())) return;
     } catch {
       // Network error mid-propagation — keep waiting.
     }
     if (attempt < probes) await sleep(intervalMs);
   }
-  log?.warn(
-    `workers.dev route did not propagate within ${(probes * intervalMs) / 1000}s; ` +
-      "returning URL anyway (health loop will retry if it stays dead)",
+  throw new CfDeployError(
+    `Relay identity unavailable at ${url} after ${probes} probes. Check the Worker deployment and its route, then register this hostname with its tunnel secret.`,
+    false,
   );
 }
 
@@ -431,7 +418,6 @@ export async function deployWorker(
         sleep,
         propagationProbes,
         propagationIntervalMs,
-        opts.log,
       );
       return {
         url,

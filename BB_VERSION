@@ -1,6 +1,6 @@
 # bb SPA version audited by the bb-shared chrome shim (issue 12).
 #
-# The chrome-shim selectors in worker/src/chrome-selectors.ts were verified
+# The chrome-shim selectors in plugin/guest-gateway/chrome-selectors.ts were verified
 # against this bb checkout. Re-run scripts/check-chrome-selectors.mjs against a
 # fresh build and bump the fields below whenever bb is upgraded; if the check
 # reports drift, update the selectors first.

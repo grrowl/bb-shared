@@ -1,6 +1,6 @@
 # Vendored: @bb-shared/tunnel-contract
 
-Verbatim copy of bb's transport-generic tunnel wire protocol package.
+Derived from a copy of bb's transport-generic tunnel wire protocol package.
 
 | | |
 |---|---|
@@ -17,10 +17,10 @@ contract without depending on an unpublished bb workspace.
 
 ## Sync policy
 
-- Copy `src/index.ts` verbatim on a bb version bump.
+- Sync the frame protocol on a bb version bump, preserving the local relay metadata helpers.
 - This is bb's public tunnel wire protocol; it changes rarely (a change
   breaks every deployed bb client). Watch `PROTOCOL_VERSION` in particular —
   if it bumps, the worker's `TunnelDO` (`worker/src/tunnel/`) and this copy
   must move in lockstep, and `SharedTunnel` sends the new value on the
   `/__tunnel` query param.
-- Only local modification: none. Copied byte-for-byte.
+- Local additions: relay identity path, public-origin transport header, identity version and validator. Frame layouts remain unchanged.

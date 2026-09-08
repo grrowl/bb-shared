@@ -36,6 +36,7 @@ export type TunnelState =
   | "connecting"
   | "connected"
   | "reconnecting"
+  | "incompatible"
   | "stopped";
 
 export interface SharedTunnelOptions {
@@ -136,6 +137,8 @@ export class SharedTunnel {
       // Drop our listeners before terminating so the 'close' handler does not
       // schedule a reconnect for a socket we are intentionally discarding.
       this.socket.removeAllListeners();
+      // terminate() during a pending handshake emits an asynchronous error.
+      this.socket.on("error", () => {});
       this.socket.terminate();
       this.socket = undefined;
     }
@@ -156,6 +159,7 @@ export class SharedTunnel {
     const sock = new NodeWebSocket(wsUrl.toString(), {
       headers: { authorization: `Bearer ${this.opts.tunnelSecret}` },
       handshakeTimeout: 15_000,
+      maxPayload: 1024 * 1024 + 6,
     });
     this.socket = sock;
 
@@ -171,11 +175,12 @@ export class SharedTunnel {
         log: this.opts.log,
         // Single origin: our worker's public origin → local bb loopback. No
         // shares, no ports — every stream is bare-handle bb traffic.
-        resolveOrigin: () => ({
+        resolveOrigin: (target) => target !== undefined ? { kind: "unregistered" } : ({
           kind: "ok",
           resolved: {
             origin: this.loopbackOrigin,
             publicOrigin: this.publicOrigin,
+            preserveOrigin: true,
           },
         }),
         onRemoteClientsChange: (n) => {
@@ -187,9 +192,16 @@ export class SharedTunnel {
 
     sock.on("unexpected-response", (_req, res) => {
       res.resume();
+      this.teardownSocket();
       const status = res.statusCode ?? 0;
       this.lastError = `worker rejected tunnel: HTTP ${status}`;
       this.opts.log.warn(this.lastError);
+      if (status === 409 || status === 426) {
+        this.lastError = `Relay protocol incompatible (HTTP ${status}); update the relay deployment.`;
+        this.stopped = true;
+        this.setState("incompatible");
+        return;
+      }
       if (status === 401 || status === 403) {
         // Bearer is wrong — reconnecting with the same secret cannot help.
         // Stay down until 07's lifecycle hands us a fresh SharedTunnel.
@@ -200,7 +212,8 @@ export class SharedTunnel {
     });
 
     sock.on("error", (e: Error) => {
-      this.lastError = humanizeTransportError(e, this.host);
+      const message = humanizeTransportError(e, this.host);
+      this.lastError = message.replaceAll(this.opts.tunnelSecret, "[redacted]");
       this.opts.log.warn(this.lastError);
       // 'error' is followed by 'close'; reconnect is scheduled there.
     });

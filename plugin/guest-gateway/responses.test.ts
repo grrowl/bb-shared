@@ -7,11 +7,8 @@ import {
   emptyHostsResponse,
   emptyPluginSettingsResponse,
   matchResponseFilter,
-  responseFiltersStage,
-} from "../src/stages/response-filters.js";
-import { EMPTY_SCOPE, type GuestScope } from "../src/scope.js";
-import type { RequestContext } from "../src/pipeline.js";
-import type { TunnelRouter } from "../src/tunnel/interface.js";
+} from "./responses";
+import { EMPTY_SCOPE, type GuestScope } from "./scope";
 
 // ---------------------------------------------------------------------------
 // Synthetic scope: thread T_IN (in project P_IN, section SEC_IN) is shared;
@@ -163,19 +160,19 @@ describe("filterSystemConfig", () => {
 
   it("strips aiServices, keybindings, and voiceTranscriptionEnabled", () => {
     expect(filtered.aiServices).toBeUndefined();
-    expect(filtered.keybindings).toBeUndefined();
-    expect(filtered.voiceTranscriptionEnabled).toBeUndefined();
+    expect(filtered.keybindings).toEqual([]);
+    expect(filtered.voiceTranscriptionEnabled).toBe(false);
   });
 
   it("keeps theme + shell config untouched", () => {
     expect(filtered.appearance).toEqual({ kind: "builtin", id: "dark" });
-    expect(filtered.customThemes).toEqual(["solarized"]);
+    expect(filtered.customThemes).toEqual([]);
     expect(filtered.generalSettings).toEqual({
       telemetryEnabled: false,
       confirmBeforeQuit: true,
     });
     expect(filtered.featureFlags).toEqual({ newSidebar: true });
-    expect(filtered.serverUrl).toBe("http://127.0.0.1:38886");
+    expect(filtered.serverUrl).toBe("");
   });
 
   it("strips aiServices deeply — the configured inference model is gone", () => {
@@ -187,7 +184,7 @@ describe("filterSystemConfig", () => {
     // The ticket names exactly three fields; the two other keybinding fields
     // are UI shell config and pass through by design.
     expect(filtered.defaultKeybindings).toEqual({ "thread.new": "mod+n" });
-    expect(filtered.keybindingOverrides).toEqual({ "settings.open": "mod+," });
+    expect(filtered.keybindingOverrides).toEqual([]);
   });
 
   it("degrades to an empty object on non-object upstream", () => {
@@ -307,11 +304,11 @@ describe("filterProjectDetail (issue 24)", () => {
     ],
   });
 
-  it("keeps in-scope sources but scopes threads + sections to the token", () => {
+  it("strips project sources and scopes threads and sections", () => {
     const out = filterProjectDetail(projectDetail(), SCOPE);
     // The project is in scope (the token holds a thread in it), so its repo
     // paths are fine to show; only the thread list is scoped.
-    expect(out.sources).toEqual([{ path: "/Users/owner/secret/repo" }]);
+    expect(out.sources).toEqual([]);
     expect((out.threads as { id: string }[]).map((t) => t.id)).toEqual([T_IN]);
     expect((out.sections as { id: string }[]).map((s) => s.id)).toEqual([
       SEC_IN,
@@ -395,124 +392,15 @@ describe("matchResponseFilter", () => {
 });
 
 // =========================================================================
-// responseFiltersStage — pipeline wiring
-// =========================================================================
 
-function ctxFor(
-  method: string,
-  pathname: string,
-  scope: GuestScope | null,
-): RequestContext {
-  const url = new URL(`https://guests-abc.workers.dev${pathname}`);
-  return {
-    request: new Request(url, { method }),
-    url,
-    env: {} as never,
-    ctx: {} as never,
-    workerPublicOrigin: url.origin,
-    token: "bbsh_" + "A".repeat(32),
-    scope,
-    perms: null,
-  };
-}
 
-function jsonRouter(body: unknown, init?: ResponseInit): TunnelRouter {
-  return {
-    acceptTunnelDial: () => {
-      throw new Error("acceptTunnelDial should not be called");
-    },
-    dispatch: async () =>
-      new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-        ...init,
-      }),
-  };
-}
-
-const explodingRouter: TunnelRouter = {
-  acceptTunnelDial: () => {
-    throw new Error("acceptTunnelDial should not be called");
-  },
-  dispatch: () => {
-    throw new Error("dispatch should not be called for this case");
-  },
-};
-
-describe("responseFiltersStage", () => {
-  it("passes an unmatched request straight through (continue)", async () => {
-    const stage = responseFiltersStage(explodingRouter);
-    const result = await stage.run(ctxFor("GET", "/api/v1/threads/x", SCOPE));
-    expect(result.kind).toBe("continue");
+describe("guest projections evolve closed", () => {
+  it("does not inherit future owner configuration and project secrets", () => {
+    expect(filterSystemConfig({ futureSecret: "secret", dataDir: "/owner", appearance: { kind: "builtin", id: "dark" } }, SCOPE)).not.toHaveProperty("futureSecret");
+    expect(filterProjectDetail({ id: P_IN, futureSecret: "secret", threads: [] }, SCOPE)).not.toHaveProperty("futureSecret");
   });
-
-  it("answers a constant path WITHOUT dispatching upstream", async () => {
-    // explodingRouter proves no tunnel hop happens for /plugins.
-    const stage = responseFiltersStage(explodingRouter);
-    const result = await stage.run(ctxFor("GET", "/api/v1/plugins", SCOPE));
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      expect(await result.response.json()).toEqual({ plugins: [] });
-    }
-  });
-
-  it("dispatches + reshapes a reshape path", async () => {
-    const stage = responseFiltersStage(jsonRouter(sidebarBootstrapFixture()));
-    const result = await stage.run(
-      ctxFor("GET", "/api/v1/sidebar-bootstrap", SCOPE),
-    );
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      const body = (await result.response.json()) as Record<string, unknown>;
-      expect((body.projects as unknown[]).length).toBe(1);
-      expect(JSON.stringify(body)).not.toContain("owner-secret-project");
-    }
-  });
-
-  it("treats a null scope as EMPTY_SCOPE (deny-everything)", async () => {
-    const stage = responseFiltersStage(jsonRouter(sidebarBootstrapFixture()));
-    const result = await stage.run(
-      ctxFor("GET", "/api/v1/sidebar-bootstrap", null),
-    );
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      const body = (await result.response.json()) as Record<string, unknown>;
-      expect(body.projects).toEqual([]);
-    }
-  });
-
-  it("passes a non-200 upstream through untouched on a reshape path", async () => {
-    const stage = responseFiltersStage(
-      jsonRouter({ error: "tunnel_offline" }, { status: 503 }),
-    );
-    const result = await stage.run(
-      ctxFor("GET", "/api/v1/system/config", SCOPE),
-    );
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      expect(result.response.status).toBe(503);
-      expect(await result.response.json()).toEqual({ error: "tunnel_offline" });
-    }
-  });
-
-  it("passes a non-JSON 200 upstream through untouched", async () => {
-    const htmlRouter: TunnelRouter = {
-      acceptTunnelDial: () => {
-        throw new Error("nope");
-      },
-      dispatch: async () =>
-        new Response("<html></html>", {
-          status: 200,
-          headers: { "content-type": "text/html" },
-        }),
-    };
-    const stage = responseFiltersStage(htmlRouter);
-    const result = await stage.run(
-      ctxFor("GET", "/api/v1/system/config", SCOPE),
-    );
-    expect(result.kind).toBe("respond");
-    if (result.kind === "respond") {
-      expect(await result.response.text()).toBe("<html></html>");
-    }
+  it("includes shared personal threads but never their siblings", () => {
+    const value = filterSidebarBootstrap({ projects: [], sections: [], personalProject: { id: "proj_personal", threads: [{id:T_IN}, {id:T_OUT}], sources:[{path:"/private"}] } }, {threadIds:new Set([T_IN]),projectIds:new Set(["proj_personal"])});
+    expect(value.personalProject).toMatchObject({id:"proj_personal",threads:[{id:T_IN}],sources:[]});
   });
 });

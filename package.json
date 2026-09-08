@@ -17,7 +17,9 @@
     "packages/*",
     "plugin"
   ],
-  "dependencies": {
-    "cloudflare": "^7.1.0"
+  "scripts": {
+    "build": "npm --prefix worker run build && bb plugin build plugin",
+    "test": "npm exec --workspace=bb-plugin-shared -- vitest run && npm --prefix worker test",
+    "typecheck": "npm exec --workspace=bb-plugin-shared -- tsc -p tsconfig.json --noEmit && npm --prefix worker run typecheck"
   }
 }

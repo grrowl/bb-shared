@@ -2,7 +2,7 @@
 //   upstream repo: bb (private) — packages/tunnel-contract
 //   upstream commit: 31a190d (2026-08-26), bb 0.40.0
 //   PROTOCOL_VERSION: 1
-// Copied verbatim. Sync manually on bb version bumps; if upstream bumps
+// Frame layouts unchanged; local relay identity helpers added. Sync manually on bb version bumps; if upstream bumps
 // PROTOCOL_VERSION the worker's TunnelDO must move in lockstep. See
 // ../VENDORED.md.
 //
@@ -23,6 +23,14 @@
 // new type bytes, existing layouts stay stable.
 
 export const PROTOCOL_VERSION = 1;
+export const RELAY_IDENTITY_PATH = "/__bb_shared/relay";
+export const PUBLIC_ORIGIN_HEADER = "x-bb-shared-public-origin";
+export const RELAY_IDENTITY = { service: "bb-shared-relay", version: 1, protocolVersion: PROTOCOL_VERSION } as const;
+export function isRelayIdentity(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const identity = value as Record<string, unknown>;
+  return identity.service === RELAY_IDENTITY.service && identity.version === RELAY_IDENTITY.version && identity.protocolVersion === PROTOCOL_VERSION && typeof identity.relayId === "string" && identity.relayId.length > 0;
+}
 
 /**
  * Query param the tunnel client sets on `/__tunnel` with its

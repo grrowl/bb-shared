@@ -38,11 +38,15 @@ export function useConnections() {
   return { connections, error, refetch };
 }
 
+function Spinner() {
+  return <span aria-hidden="true" className="inline-block size-3 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent" />;
+}
+
 export function ConnectionSummary({ connection }: { connection: ConnectionView }) {
   return <div className="min-w-0 text-xs">
     <p className="truncate font-mono" title={connection.url}>{new URL(connection.url).host}</p>
     <p role="status" className={connection.state === "ready" ? "text-muted-foreground" : "text-amber-600"}>
-      {connectionLabel(connection)}{connection.isDefault ? " · Default" : ""}
+      {connection.state === "connecting" ? <><Spinner />{" "}</> : null}{connectionLabel(connection)}{connection.isDefault ? " · Default" : ""}
     </p>
     {connection.fault ? <p className="text-destructive">{connection.fault}</p> : null}
   </div>;
@@ -70,14 +74,15 @@ export function ConnectionsPanel() {
   const [url, setUrl] = React.useState("");
   const [secret, setSecret] = React.useState("");
   const [adding, setAdding] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
+  const [activeAction, setActiveAction] = React.useState<string | null>(null);
+  const busy = activeAction !== null;
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<string | null>(null);
-  const run = async (action: () => Promise<unknown>) => {
-    setBusy(true); setActionError(null);
+  const run = async (key: string, action: () => Promise<unknown>) => {
+    setActiveAction(key); setActionError(null);
     try { await action(); refetch(); }
     catch (error) { setActionError(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
+    finally { setActiveAction(null); }
   };
   return <section className="flex flex-col gap-3 border-b border-border/60 py-4" aria-label="Connections">
     <h2 className="text-sm font-semibold">Connections</h2>
@@ -88,24 +93,24 @@ export function ConnectionsPanel() {
         <div className="flex items-center justify-between gap-2">
           <ConnectionSummary connection={connection} />
           <div className="flex gap-2">
-            {!connection.isDefault ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("setDefaultConnection", { id: connection.id }))}>Use by default</Button> : null}
+            {!connection.isDefault ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(`default:${connection.id}`, () => rpc.call("setDefaultConnection", { id: connection.id }))} aria-busy={activeAction === `default:${connection.id}`}>{activeAction === `default:${connection.id}` ? <Spinner /> : null}Use by default</Button> : null}
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRemoving(connection.id)}>Remove</Button>
           </div>
         </div>
         <ClaimConnection id={connection.id} />
         {removing === connection.id ? <div className="flex flex-col gap-2 text-xs">
           <p>Disconnect {new URL(connection.url).host}? Links using this hostname stop working. Invitations and other connections remain available.</p>
-          <div className="flex gap-2"><Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { await rpc.call("removeConnection", { id: connection.id }); setRemoving(null); })}>Disconnect and remove</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => setRemoving(null)}>Cancel</Button></div>
+          <div className="flex gap-2"><Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(`remove:${connection.id}`, async () => { await rpc.call("removeConnection", { id: connection.id }); setRemoving(null); })} aria-busy={activeAction === `remove:${connection.id}`}>{activeAction === `remove:${connection.id}` ? <Spinner /> : null}Disconnect and remove</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => setRemoving(null)}>Cancel</Button></div>
         </div> : null}
       </li>)}
     </ul>}
     <div className="flex gap-2">
-      <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("deployConnection", null))}>{busy ? "Working…" : "Deploy connection"}</Button>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => void run("deploy", () => rpc.call("deployConnection", null))} aria-busy={activeAction === "deploy"}>{activeAction === "deploy" ? <><Spinner />Deploying…</> : "Deploy connection"}</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setAdding(!adding); setSecret(""); }}>Add existing hostname</Button>
     </div>
     {adding ? <form className="flex flex-col gap-2" onSubmit={(event) => {
       event.preventDefault();
-      void run(async () => {
+      void run("register", async () => {
         const pairingSecret = secret;
         setSecret("");
         await rpc.call("registerConnection", { url: url.trim(), tunnelSecret: pairingSecret });
@@ -115,7 +120,7 @@ export function ConnectionsPanel() {
       <label className="text-xs">Worker URL<Input type="url" placeholder="https://share.example.com" required value={url} disabled={busy} onChange={(event) => setUrl(event.target.value)} /></label>
       <label className="text-xs">Pairing secret<Input type="password" autoComplete="off" required value={secret} disabled={busy} onChange={(event) => setSecret(event.target.value)} /></label>
       <p className="text-xs text-muted-foreground">Use the secret configured on your Worker. BB verifies the tunnel before saving the connection.</p>
-      <Button type="submit" size="sm" disabled={busy || !url.trim() || !secret}>{busy ? "Verifying…" : "Verify and add"}</Button>
+      <Button type="submit" size="sm" disabled={busy || !url.trim() || !secret} aria-busy={activeAction === "register"}>{activeAction === "register" ? <><Spinner />Verifying…</> : "Verify and add"}</Button>
     </form> : null}
     {actionError ? <p role="alert" className="text-xs text-destructive">{actionError}</p> : null}
   </section>;

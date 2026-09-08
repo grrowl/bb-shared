@@ -9,7 +9,7 @@ export default defineConfig({
     alias: {
       "@bb-shared/tunnel-contract": fileURLToPath(
         new URL(
-          "../packages/bb-shared-tunnel-contract/src/index.ts",
+          "../plugin/packages/bb-shared-tunnel-contract/src/index.ts",
           import.meta.url,
         ),
       ),

@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeFrame, encodeFrame, type Frame, type OpenHttpFrame } from "@bb-shared/tunnel-contract";
-import { TunnelSession } from "../../packages/bb-shared-tunnel-client/src/session.js";
+import { TunnelSession } from "../packages/bb-shared-tunnel-client/src/session.js";
 
 class Relay extends EventEmitter {
   readyState = WebSocket.OPEN;

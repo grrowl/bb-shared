@@ -1,13 +1,5 @@
-// bb-plugin-shared — backend entry.
-//
-// Scaffold for issue 04 (see `.scratch/v0/issues/04-plugin-scaffold.md`). The
-// RPC contract is complete and typed; the handlers are stubs that throw
-// "not implemented" so downstream issues (05 token store, 06 authz, 07
-// worker deploy) can fill the bodies without touching call sites.
-//
-// One consumer: the frontend at `app.tsx`, which reaches these methods with
-// `useRpc<typeof rpcContract>()`.
-import { fileURLToPath } from "node:url";
+// bb-plugin-shared — backend entry. The typed RPC contract is consumed by the
+// frontend in `app.tsx`; this module owns its handlers and worker lifecycle.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -19,19 +11,18 @@ import {
   type Token as StoredToken,
   type TokenSnapshot,
 } from "./lib/token-store";
-import { registerAuthzRoute } from "./authz/authz";
+import { createGuestGateway } from "./guest-gateway";
 import {
   WorkerLifecycle,
   bundleWorker,
-  createWorkerRecordStore,
+  ConnectionRecordStore,
 } from "./worker-lifecycle";
 import { createDeviceKeyProvider } from "./lib/device-key";
 import { ShareStateRecordStore } from "./lib/share-state-record";
 import { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
-// Data model (SPEC.md §"Data model"). In-memory in v0; the shape is designed
-// so a persistent store can slot in later without touching call sites.
+// Data model exposed over the owner-only RPC boundary.
 // ---------------------------------------------------------------------------
 
 export const permSchema = z.enum(["read", "write"]);
@@ -64,42 +55,11 @@ export const tokenSchema = z.object({
 });
 export type Token = z.output<typeof tokenSchema>;
 
-// getWorkerStatus payload (issue 07). `url` is surfaced to the owner UI; the
-// worker's provisioning API token + tunnelSecret never cross this boundary.
-// `state` drives the online/offline and explicit-recreate UI.
-//
-// H1 (ticket 20): the CF `claim.url` account-takeover bearer is NOT in this
-// payload — it rode both this RPC and the worker-changed broadcast. The claim
-// URL now flows only through the dedicated owner-only `getClaimUrl` RPC below,
-// which the worker denies to guests (M2); it never appears on a broadcast.
-export const workerStatusSchema = z.object({
-  url: z.string().optional(),
-  state: z.enum(["idle", "deploying", "live", "offline"]),
-  healthy: z.boolean(),
-  tunnel: z
-    .enum([
-      "disconnected",
-      "connecting",
-      "connected",
-      "reconnecting",
-      "stopped",
-    ])
-    .optional(),
-  fault: z.string().optional(),
+export const connectionSchema = z.object({
+  id: z.string(), url: z.string(), state: z.enum(["connecting", "ready", "offline", "incompatible"]),
+  isDefault: z.boolean(), tunnel: z.string().optional(), fault: z.string().optional(),
 });
-export type WorkerStatus = z.output<typeof workerStatusSchema>;
-
-// getClaimUrl payload (H1, ticket 20). Owner-only: returns the CF claim
-// affordance (an account-takeover bearer). Guest-unreachable because the worker
-// deny-closes every `/api/v1/plugins/shared/rpc/*` path (M2). `null` until a
-// worker is deployed.
-export const claimUrlSchema = z.object({
-  claim: z
-    .object({ url: z.string(), expiresAt: z.number().nullable() })
-    .nullable(),
-});
-export type ClaimUrlResult = z.output<typeof claimUrlSchema>;
-
+export const claimUrlSchema = z.object({ claim: z.object({url:z.string(), expiresAt:z.number().nullable()}).nullable() });
 
 // void-returning methods use { ok: true } as their wire payload — zod has no
 // clean "no result" primitive for the strict-JSON envelope, and this matches
@@ -126,7 +86,7 @@ export const rpcContract = defineRpcContract({
         })
         .optional(),
     }),
-    output: z.object({ token: tokenSchema, url: z.string() }),
+    output: z.object({ token: tokenSchema, url: z.string().optional() }),
   },
   listTokens: {
     input: z.null(),
@@ -164,18 +124,12 @@ export const rpcContract = defineRpcContract({
     }),
     output: okSchema,
   },
-  getWorkerStatus: {
-    input: z.null(),
-    output: workerStatusSchema,
-  },
-  getClaimUrl: {
-    input: z.null(),
-    output: claimUrlSchema,
-  },
-  recreateWorker: {
-    input: z.null(),
-    output: okSchema,
-  },
+  listConnections: { input: z.null(), output: z.object({connections:z.array(connectionSchema)}) },
+  registerConnection: {input:z.object({url:z.string().min(1).max(2048),tunnelSecret:z.string().min(32).max(256)}),output:okSchema},
+  deployConnection: {input:z.null(),output:okSchema},
+  removeConnection: {input:z.object({id:z.string()}),output:okSchema},
+  setDefaultConnection: {input:z.object({id:z.string()}),output:okSchema},
+  getClaimUrl: {input:z.object({id:z.string()}),output:claimUrlSchema},
 });
 
 export type RpcContract = typeof rpcContract;
@@ -191,9 +145,7 @@ export type RpcContract = typeof rpcContract;
 export { REALTIME_CHANNELS } from "./lib/realtime-channels";
 
 // ---------------------------------------------------------------------------
-// Plugin factory. Bodies stubbed with `throw new Error("not implemented: X")`
-// so a subagent filling them in only writes the body — the wire shape is
-// already fixed by the contract above.
+// Plugin factory. Guest transport starts only after BB binds its loopback server.
 // ---------------------------------------------------------------------------
 
 export default async function plugin(bb: BbPluginApi) {
@@ -270,49 +222,35 @@ export default async function plugin(bb: BbPluginApi) {
       resolveTitle,
     });
 
-  // Authoritative authz endpoint the CF worker pulls per guest request
-  // (issue 06). Token-authed; consumes the same in-memory store.
-  registerAuthzRoute(bb, store);
-
-  // Worker lifecycle manager (issue 07): owns the CF worker deploy pipeline,
-  // secret provisioning, health/redeploy loop, and the SharedTunnel (issue 14)
-  // it drives. Mounted as a single background service below.
-  //
-  // The worker source lives at `../worker` relative to this plugin package in
-  // the v0 monorepo; `BB_SHARED_WORKER_DIR` overrides for packaged installs
-  // where the layout differs.
-  const workerDir =
-    process.env.BB_SHARED_WORKER_DIR ??
-    fileURLToPath(new URL("../worker", import.meta.url));
-
+  let gateway: ReturnType<typeof createGuestGateway> | undefined;
+  let gatewayUrl: string | undefined;
+  let gatewayStart: Promise<void> | undefined;
+  let disposed = false;
+  const ensureGateway = () => gatewayStart ??= (async () => {
+    if (disposed) throw new Error("Sharing is stopping.");
+    gateway = createGuestGateway({
+      loopbackBaseUrl: bb.server.loopbackBaseUrl, store, keyProvider: deviceKeyProvider,
+      storage: bb.storage.kv, log: bb.log,
+    });
+    gatewayUrl = await gateway.start();
+    if (disposed) { await gateway.stop(); throw new Error("Sharing is stopping."); }
+  })();
   const lifecycle = new WorkerLifecycle({
-    recordStore: createWorkerRecordStore(bb.storage.kv, {
-      keyProvider: deviceKeyProvider,
-      log: bb.log,
-    }),
+    recordStore: new ConnectionRecordStore(bb.storage.kv, deviceKeyProvider),
     log: bb.log,
-    publishStatus: (status) => {
-      bb.realtime.publish(REALTIME_CHANNELS.workerChanged, status);
-    },
-    getLoopbackBaseUrl: () => bb.server.loopbackBaseUrl,
-    // The authz endpoint secret — bb's built-in per-plugin token. We only plumb
-    // it to the deploy (SPEC §"Secret provisioning" #1).
-    getAuthzToken: async () => {
-      const { token } = await bb.sdk.plugins.token({ pluginId: bb.pluginId });
-      return token;
-    },
-    // Kept for API compatibility; lifecycle probes saved workers even without shares.
-    hasTokens: async () => (await store.listTokens()).length > 0,
-    bundleWorker: () => bundleWorker({ workerDir, log: bb.log }),
+    publishStatus: () => bb.realtime.publish(REALTIME_CHANNELS.workerChanged, {at:Date.now()}),
+    getGatewayBaseUrl: () => { if (!gatewayUrl) throw new Error("Guest gateway has not started."); return gatewayUrl; },
+    verifyReadiness: (challenge, body) => gateway?.verifyReadiness(challenge, body) ?? false,
+    bundleWorker: () => bundleWorker(),
   });
-
-  bb.background.service("worker-lifecycle", {
-    start: (signal) => lifecycle.start(signal),
-  });
+  const initializeSharing = async () => { await ensureGateway(); await lifecycle.initialize(); };
+  bb.onDispose(async () => { disposed = true; lifecycle.stop(); await gatewayStart?.catch(() => {}); await gateway?.stop(); });
+  bb.background.service("worker-lifecycle", {start: async signal => { await ensureGateway(); await lifecycle.start(signal); }});
 
   // Broadcast helper — nudges the frontend management panel (issue 16) to
   // re-fetch after any token mutation.
   const emitTokensChanged = () => {
+    gateway?.grantsChanged();
     bb.realtime.publish(REALTIME_CHANNELS.tokensChanged, { at: Date.now() });
   };
 
@@ -341,22 +279,14 @@ export default async function plugin(bb: BbPluginApi) {
       } catch (err) {
         throw mapStoreError(err);
       }
-      // Lazy first-deploy (SPEC §"Worker lifecycle"): the first mint triggers
-      // the worker deploy. ensureDeployed dedupes and swallows deploy errors,
-      // so minting never fails on a worker hiccup — the URL falls back to the
-      // `<worker-pending>` placeholder and the owner UI badges it until the
-      // health loop brings a worker up.
-      await lifecycle.ensureDeployed();
-      // enrichToken deep-links to shares[0] (the firstThread just attached) and
-      // builds the URL from the same cached raw token, so `url` here equals the
-      // one a later listTokens returns for this token.
       const wire = await toWireToken(token);
       emitTokensChanged();
-      // The raw token was just cached, so enrichToken always set `wire.url`.
-      return { token: wire, url: wire.url! };
+      // Invitations can be saved before a hostname is configured.
+      return { token: wire, ...(wire.url === undefined ? {} : {url: wire.url}) };
     },
 
     async listTokens() {
+      await initializeSharing();
       const stored = await store.listTokens();
       const tokens = await Promise.all(stored.map(toWireToken));
       return { tokens };
@@ -419,23 +349,12 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
 
-    getWorkerStatus(): WorkerStatus {
-      return lifecycle.getStatus();
-    },
-
-    // Owner-only (H1, ticket 20): the CF claim.url is an account-takeover
-    // bearer, so it is delivered on its own RPC — kept off getWorkerStatus and
-    // the worker-changed broadcast — and the worker denies this path to guests
-    // (M2). See worker/src/stages/authz.ts `isGuestDeniedRpcPath`.
-    getClaimUrl(): ClaimUrlResult {
-      return { claim: lifecycle.getClaimUrl() };
-    },
-
-    async recreateWorker() {
-      await lifecycle.recreateWorker();
-      emitTokensChanged();
-      return { ok: true as const };
-    },
+    async listConnections() { await initializeSharing(); return {connections:lifecycle.listConnections()}; },
+    async registerConnection(input) { await initializeSharing(); await lifecycle.registerConnection(input.url,input.tunnelSecret); emitTokensChanged(); return {ok:true as const}; },
+    async deployConnection() { await initializeSharing(); await lifecycle.deployConnection(); emitTokensChanged(); return {ok:true as const}; },
+    async removeConnection(input) { await initializeSharing(); await lifecycle.removeConnection(input.id); emitTokensChanged(); return {ok:true as const}; },
+    async setDefaultConnection(input) { await initializeSharing(); await lifecycle.setDefaultConnection(input.id); emitTokensChanged(); return {ok:true as const}; },
+    async getClaimUrl(input) { await initializeSharing(); return {claim:lifecycle.getClaimUrl(input.id)}; },
   });
 
   bb.onDispose(() => {

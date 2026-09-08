@@ -1,122 +1,240 @@
-import type { PluginLogger } from "@get-bb/plugin-sdk";
-import { SharedTunnel, type SharedTunnelOptions, type TunnelState } from "../lib/shared-tunnel";
-import { deployWorker as defaultDeployWorker, redactSecrets } from "./cf-deploy";
-import { mintTunnelSecret as defaultMintTunnelSecret } from "./tunnel-secret";
-import type { WorkerRecord, WorkerRecordStore } from "./worker-record";
+import { randomBytes, randomUUID } from "node:crypto";
+import { PROTOCOL_VERSION } from "@bb-shared/tunnel-contract";
+import { SharedTunnel, type SharedTunnelOptions, type TunnelState, type TunnelStatus } from "../lib/shared-tunnel";
+import { deployWorker, redactSecrets } from "./cf-deploy";
+import { mintTunnelSecret } from "./tunnel-secret";
+import { normalizeConnectionUrl, type ConnectionRecord, type ConnectionSnapshot } from "./worker-record";
 
-export type WorkerState = "idle" | "deploying" | "live" | "offline";
-export interface WorkerStatus { url?: string; state: WorkerState; healthy: boolean; tunnel?: TunnelState; fault?: string; }
 export const WORKER_DEPLOY_DEFAULTS = { scriptName: "bb-shared", compatibilityDate: "2025-06-01", doClassName: "TunnelDO", doBindingName: "TUNNEL_DO", migrationTag: "v1" } as const;
-export interface TunnelLike { start(): void; stop(): void; }
+export type ConnectionState = "connecting" | "ready" | "offline" | "incompatible";
+export interface ConnectionStatus { id: string; url: string; state: ConnectionState; isDefault: boolean; tunnel?: TunnelState; fault?: string; }
+export interface TunnelLike { start(): void; stop(): void; getStatus(): TunnelStatus; }
 export interface WorkerLifecycleDeps {
-  recordStore: WorkerRecordStore; log: PluginLogger; publishStatus: (status: WorkerStatus) => void;
-  getLoopbackBaseUrl: () => string; getAuthzToken: () => Promise<string>;
-  /** Retained for compatibility; probes intentionally run even with no shares. */ hasTokens: () => Promise<boolean>;
-  bundleWorker: () => Promise<string>; deployWorker?: typeof defaultDeployWorker;
-  mintTunnelSecret?: () => string; createTunnel?: (opts: SharedTunnelOptions) => TunnelLike;
-  fetchImpl?: typeof fetch; now?: () => number; healthTimeoutMs?: number; healthIntervalMs?: number;
-  deployDefaults?: typeof WORKER_DEPLOY_DEFAULTS;
+  recordStore: { load(): Promise<ConnectionSnapshot>; save(value: ConnectionSnapshot): Promise<void> };
+  log: SharedTunnelOptions["log"];
+  publishStatus: () => void;
+  getGatewayBaseUrl: () => string;
+  verifyReadiness: (challenge: string, response: unknown) => boolean;
+  bundleWorker: () => Promise<string>;
+  deployWorker?: typeof deployWorker;
+  createTunnel?: (options: SharedTunnelOptions) => TunnelLike;
+  fetchImpl?: typeof fetch;
+  intervalMs?: number;
+  readyTimeoutMs?: number;
+  probeIntervalMs?: number;
+}
+interface Runtime {
+  record: ConnectionRecord;
+  state: ConnectionState;
+  fault?: string;
+  tunnel?: TunnelLike;
+  probe?: Promise<void>;
+  generation: number;
 }
 
-/**
- * A preservation-first owner worker lifecycle. A saved endpoint is never
- * inferred to be replaceable: failures mean Offline and are probed again.
- * `recreateWorker` is the sole path that may create a second temporary account.
- */
+/** Connections are observed independently of Cloudflare ownership or claim status. */
 export class WorkerLifecycle {
-  private readonly now: () => number; private readonly healthTimeoutMs: number; private readonly healthIntervalMs: number;
-  private readonly deployDefaults: typeof WORKER_DEPLOY_DEFAULTS;
-  private record: WorkerRecord | null = null; private state: WorkerState = "idle"; private tunnel: TunnelLike | null = null;
-  private tunnelState: TunnelState | undefined; private fault: string | undefined; private recreateInFlight: Promise<void> | null = null;
-  private recoveryRequired = false;
-  constructor(private readonly deps: WorkerLifecycleDeps) {
-    this.now = deps.now ?? (() => Date.now()); this.healthTimeoutMs = deps.healthTimeoutMs ?? 10_000;
-    this.healthIntervalMs = deps.healthIntervalMs ?? 60_000; this.deployDefaults = deps.deployDefaults ?? WORKER_DEPLOY_DEFAULTS;
+  private readonly connections = new Map<string, Runtime>();
+  private readonly candidates = new Set<Runtime>();
+  private defaultId: string | null = null;
+  private initialization?: Promise<void>;
+  private mutations: Promise<unknown> = Promise.resolve();
+  private readonly abort = new AbortController();
+  constructor(private readonly deps: WorkerLifecycleDeps) {}
+
+  async initialize(): Promise<void> {
+    this.initialization ??= (async () => {
+      const snapshot = await this.deps.recordStore.load();
+      this.defaultId = snapshot.defaultId;
+      for (const record of snapshot.connections) {
+        const runtime: Runtime = { record, state: "connecting", generation: 0 };
+        this.connections.set(record.id, runtime);
+        this.connect(runtime);
+      }
+    })();
+    return this.initialization;
   }
   async start(signal: AbortSignal): Promise<void> {
-    await this.bootstrap();
-    while (!signal.aborted) { await this.sleep(this.healthIntervalMs, signal); if (!signal.aborted) await this.tick().catch((err) => this.warn(`worker-lifecycle tick error: ${String(err)}`)); }
-    this.teardownTunnel();
+    const stop = () => this.stop();
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      if (signal.aborted) return;
+      await this.initialize();
+      while (!signal.aborted && !this.abort.signal.aborted) {
+        await this.sleep(this.deps.intervalMs ?? 15_000);
+        if (signal.aborted || this.abort.signal.aborted) break;
+        await Promise.all([...this.connections.values()].map(runtime => this.probe(runtime)));
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+      this.stop();
+    }
   }
-  currentWorkerUrl(): string | null { return this.record?.url ?? null; }
-  getStatus(): WorkerStatus {
-    const status: WorkerStatus = { state: this.state, healthy: this.state === "live" };
-    if (this.record) status.url = this.record.url;
-    if (this.tunnelState !== undefined) status.tunnel = this.tunnelState;
-    if (this.fault) status.fault = this.fault;
-    return status;
+  stop(): void {
+    if (this.abort.signal.aborted) return;
+    this.abort.abort();
+    for (const runtime of [...this.connections.values(), ...this.candidates]) runtime.tunnel?.stop();
   }
-  /** Claim completion happens outside bb-shared; expired bearer links are hidden. */
-  getClaimUrl(): { url: string; expiresAt: number | null } | null {
-    const claim = this.record?.claim;
-    return claim && (claim.expiresAt === null || claim.expiresAt > this.now()) ? claim : null;
+  currentWorkerUrl(): string | null { return this.connections.get(this.defaultId ?? "")?.record.url ?? null; }
+  listConnections(): ConnectionStatus[] {
+    return [...this.connections.values()].map(runtime => ({
+      id: runtime.record.id, url: runtime.record.url, state: runtime.state,
+      isDefault: runtime.record.id === this.defaultId,
+      ...(runtime.tunnel ? {tunnel: runtime.tunnel.getStatus().state} : {}),
+      ...(runtime.fault === undefined ? {} : {fault: runtime.fault}),
+    }));
+  }
+  getClaimUrl(id: string): ConnectionRecord["claim"] {
+    const claim = this.connections.get(id)?.record.claim;
+    return claim && (claim.expiresAt === null || claim.expiresAt > Date.now()) ? claim : null;
   }
   async ensureDeployed(): Promise<void> {
-    // First share may provision only when durable storage is genuinely empty.
-    if (this.record || this.recoveryRequired) return;
-    await this.recreateWorker();
+    return this.mutate(async () => {
+      if (this.connections.size === 0) await this.deploy();
+    });
   }
-  async recreateWorker(): Promise<void> {
-    if (this.recreateInFlight) return this.recreateInFlight;
-    this.recreateInFlight = this.provisionReplacement().finally(() => { this.recreateInFlight = null; });
-    return this.recreateInFlight;
+  async deployConnection(): Promise<void> { return this.mutate(() => this.deploy()); }
+  async registerConnection(url: string, tunnelSecret: string): Promise<void> {
+    return this.mutate(() => this.register(url, tunnelSecret, null));
   }
-  private async bootstrap(): Promise<void> {
-    this.record = await this.deps.recordStore.load(); this.recoveryRequired = await this.deps.recordStore.requiresRecovery();
-    if (!this.record) { this.setState(this.recoveryRequired ? "offline" : "idle", this.recoveryRequired ? "Saved worker data needs manual recovery" : undefined); return; }
-    if (await this.healthCheck(this.record.url)) { this.startTunnel(this.record.url, this.record.tunnelSecret); this.setState("live"); }
-    else this.setState("offline", "Worker is offline; we’ll keep checking it, otherwise you can Recreate it");
+  async removeConnection(id: string): Promise<void> {
+    return this.mutate(async () => {
+      const runtime = this.requireConnection(id);
+      const next = [...this.connections.values()].filter(r => r !== runtime).map(r => r.record);
+      const defaultId = this.defaultId === id ? next[0]?.id ?? null : this.defaultId;
+      await this.save(next, defaultId);
+      this.connections.delete(id);
+      this.defaultId = defaultId;
+      runtime.tunnel?.stop();
+      this.publish();
+    });
   }
-  private async tick(): Promise<void> {
-    // Do not gate recovery on shares: an owner needs an accurate state after a restart.
-    if (!this.record) return;
-    if (await this.healthCheck(this.record.url)) {
-      if (!this.tunnel) this.startTunnel(this.record.url, this.record.tunnelSecret);
-      if (this.state !== "live") this.setState("live");
-      return;
+  async setDefaultConnection(id: string): Promise<void> {
+    return this.mutate(async () => {
+      this.requireConnection(id);
+      await this.save([...this.connections.values()].map(r => r.record), id);
+      this.defaultId = id;
+      this.publish();
+    });
+  }
+  private requireConnection(id: string): Runtime {
+    const connection = this.connections.get(id);
+    if (!connection) throw new Error("Connection not found.");
+    return connection;
+  }
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutations.then(async () => {
+      await this.initialize();
+      if (this.abort.signal.aborted) throw new Error("Sharing is stopping. Try again after the plugin reloads.");
+      return operation();
+    });
+    this.mutations = result.catch(() => {});
+    return result;
+  }
+  private async deploy(): Promise<void> {
+    if (this.connections.size >= 16) throw new Error("Remove an unused connection before adding another.");
+    const secret = mintTunnelSecret();
+    const result = await (this.deps.deployWorker ?? deployWorker)({
+      ...WORKER_DEPLOY_DEFAULTS, scriptContent: await this.deps.bundleWorker(), tunnelSecret: secret,
+    }, { fetchImpl: this.deps.fetchImpl, log: this.deps.log });
+    await this.register(result.url, secret, result.claim);
+  }
+  private async identity(url: string): Promise<string> {
+    const response = await this.fetch(new URL("/__bb_shared/relay", url));
+    const identity = await response.json().catch(() => null) as Record<string, unknown> | null;
+    if (!response.ok || identity?.service !== "bb-shared-relay" || identity.version !== 1
+      || identity.protocolVersion !== PROTOCOL_VERSION || typeof identity.relayId !== "string" || !identity.relayId || identity.relayId.length > 128) {
+      throw new Error("This hostname does not serve a compatible BB Shared relay. Deploy the current relay before connecting.");
     }
-    this.setState("offline", "Worker is offline; we’ll keep checking it, otherwise you can Recreate it");
+    return identity.relayId;
   }
-  private async provisionReplacement(): Promise<void> {
-    const prior = this.record; const generation = (prior?.generation ?? -1) + 1;
-    this.setState("deploying");
-    try {
-      const [scriptContent, authzToken] = await Promise.all([this.deps.bundleWorker(), this.deps.getAuthzToken()]);
-      const tunnelSecret = (this.deps.mintTunnelSecret ?? defaultMintTunnelSecret)();
-      const result = await (this.deps.deployWorker ?? defaultDeployWorker)({ scriptName: this.deployDefaults.scriptName, compatibilityDate: this.deployDefaults.compatibilityDate, scriptContent, tunnelSecret, authzToken, doClassName: this.deployDefaults.doClassName, doBindingName: this.deployDefaults.doBindingName, migrationTag: this.deployDefaults.migrationTag }, { fetchImpl: this.deps.fetchImpl, log: this.deps.log });
-      // apiToken is strictly provisioning-only and deliberately never enters WorkerRecord.
-      const next: WorkerRecord = { deploymentId: result.deploymentId, url: result.url, tunnelSecret, claim: result.claim, deployedAt: this.now(), generation };
-      await this.deps.recordStore.save(next); // durable save happens before the old endpoint is disturbed
-      this.teardownTunnel(); this.record = next; this.recoveryRequired = false; this.startTunnel(next.url, next.tunnelSecret); this.setState("live");
-      this.deps.log.info(`worker provisioned at ${next.url}`);
-    } catch (err) {
-      this.record = prior; this.setState("offline", "Recreate worker failed; the previous worker record was kept.");
-      this.deps.log.error(`worker recreate failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
-      throw err;
+  private async register(input: string, tunnelSecret: string, claim: ConnectionRecord["claim"]): Promise<void> {
+    const url = normalizeConnectionUrl(input);
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(tunnelSecret)) throw new Error("Enter the relay's pairing secret (32–256 base64url characters).");
+    if (this.connections.size >= 16) throw new Error("Remove an unused connection before adding another.");
+    if ([...this.connections.values()].some(r => r.record.url === url)) throw new Error("This hostname is already registered.");
+    const relayId = await this.identity(url);
+    if ([...this.connections.values()].some(r => r.record.relayId === relayId)) {
+      throw new Error("This relay is already connected through another hostname. Remove that connection before changing its hostname.");
     }
-  }
-  private startTunnel(url: string, tunnelSecret: string): void {
-    let tunnel: TunnelLike;
-    tunnel = (this.deps.createTunnel ?? ((opts) => new SharedTunnel(opts)))({ workerUrl: url, tunnelSecret, loopbackBaseUrl: this.deps.getLoopbackBaseUrl(), log: this.deps.log, onStatusChange: (state) => {
-      this.tunnelState = state;
-      // Connecting/reconnecting are normal and never trigger replacement. A stopped tunnel is actionable.
-      if (state === "stopped") { if (this.tunnel === tunnel) this.tunnel = null; this.setState("offline", "Tunnel stopped. Check the local server, then use Recreate worker only if replacement is needed."); } else this.publish();
-    }});
-    this.tunnel = tunnel; tunnel.start();
-  }
-  private teardownTunnel(): void { this.tunnel?.stop(); this.tunnel = null; this.tunnelState = undefined; }
-  /** Exact identity probe: a CF 404 HTML page and arbitrary 4xx must never look healthy. */
-  private async healthCheck(url: string): Promise<boolean> {
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.healthTimeoutMs); timer.unref?.();
+    const record: ConnectionRecord = { id: randomUUID(), relayId, url, tunnelSecret, claim, createdAt: Date.now() };
+    const runtime: Runtime = { record, state: "connecting", generation: 0 };
+    this.candidates.add(runtime);
     try {
-      const response = await (this.deps.fetchImpl ?? fetch)(new URL("/", url).toString(), { method: "GET", redirect: "manual", signal: controller.signal });
-      if (response.status !== 401) return false;
-      const body: unknown = await response.json().catch(() => null);
-      return !!body && typeof body === "object" && (body as { error?: unknown }).error === "token_missing";
-    } catch { return false; } finally { clearTimeout(timer); }
+      this.connect(runtime);
+      const deadline = Date.now() + (this.deps.readyTimeoutMs ?? 30_000);
+      while (Date.now() < deadline && !this.abort.signal.aborted) {
+        await this.probe(runtime);
+        if (runtime.state === "ready") break;
+        if (["stopped", "incompatible"].includes(runtime.tunnel?.getStatus().state ?? "")) throw new Error(runtime.fault ?? "Relay pairing failed. Check the pairing secret.");
+        await this.sleep(this.deps.probeIntervalMs ?? 250);
+      }
+      if (runtime.state !== "ready" || this.abort.signal.aborted) throw new Error(runtime.fault ?? "The relay did not establish a working connection to BB. Check the hostname and pairing secret, then retry.");
+      const defaultId = this.defaultId ?? record.id;
+      await this.save([...this.connections.values()].map(r => r.record).concat(record), defaultId);
+      if (this.abort.signal.aborted) throw new Error("Sharing stopped while registering the connection.");
+      this.connections.set(record.id, runtime);
+      this.defaultId = defaultId;
+      this.publish();
+    } catch (error) {
+      runtime.tunnel?.stop();
+      throw new Error(redactSecrets(error instanceof Error ? error.message : String(error)));
+    } finally { this.candidates.delete(runtime); }
   }
-  private setState(next: WorkerState, fault?: string): void { this.state = next; this.fault = fault; this.publish(); }
-  private publish(): void { try { this.deps.publishStatus(this.getStatus()); } catch (err) { this.warn(`failed to publish worker status: ${String(err)}`); } }
-  private warn(message: string): void { this.deps.log.warn(message); }
-  private sleep(ms: number, signal: AbortSignal): Promise<void> { return new Promise((resolve) => { if (signal.aborted) return resolve(); const timer = setTimeout(done, ms); timer.unref?.(); const onAbort = () => { clearTimeout(timer); done(); }; function done() { signal.removeEventListener("abort", onAbort); resolve(); } signal.addEventListener("abort", onAbort, { once: true }); }); }
+  private connect(runtime: Runtime): void {
+    if (this.abort.signal.aborted) return;
+    runtime.tunnel = (this.deps.createTunnel ?? (options => new SharedTunnel(options)))({
+      workerUrl: runtime.record.url, tunnelSecret: runtime.record.tunnelSecret,
+      loopbackBaseUrl: this.deps.getGatewayBaseUrl(), log: this.deps.log,
+      onStatusChange: state => {
+        runtime.generation++;
+        runtime.state = state === "incompatible" ? "incompatible" : state === "stopped" || state === "reconnecting" || state === "disconnected" ? "offline" : "connecting";
+        runtime.fault = state === "connected" || state === "connecting" ? undefined : runtime.tunnel?.getStatus().lastError ?? "Connection to relay interrupted; reconnecting.";
+        this.publish();
+        if (state === "connected") void this.probe(runtime);
+      },
+    });
+    runtime.tunnel.start();
+  }
+  private probe(runtime: Runtime): Promise<void> {
+    if (runtime.probe) return runtime.probe;
+    if (this.abort.signal.aborted || runtime.tunnel?.getStatus().state !== "connected") return Promise.resolve();
+    const generation = runtime.generation;
+    runtime.probe = (async () => {
+      try {
+        const challenge = randomBytes(24).toString("base64url");
+        const url = new URL("/__bb_shared/ready", runtime.record.url);
+        url.searchParams.set("challenge", challenge);
+        const response = await this.fetch(url);
+        const body: unknown = await response.json().catch(() => null);
+        if (!response.ok || !this.deps.verifyReadiness(challenge, body)) throw new Error(`Guest gateway readiness failed (HTTP ${response.status}).`);
+        if (runtime.generation !== generation || this.abort.signal.aborted) return;
+        runtime.state = "ready";
+        runtime.fault = undefined;
+      } catch (error) {
+        if (runtime.generation !== generation || this.abort.signal.aborted) return;
+        runtime.state = "offline";
+        runtime.fault = redactSecrets(error instanceof Error ? error.message : "Guest gateway is unavailable.");
+      }
+      this.publish();
+    })().finally(() => { runtime.probe = undefined; });
+    return runtime.probe;
+  }
+  private async save(connections: ConnectionRecord[], defaultId: string | null): Promise<void> {
+    await this.deps.recordStore.save({ version: 1, defaultId, connections: connections.map(record => ({
+      ...record, claim: record.claim?.expiresAt !== null && (record.claim?.expiresAt ?? Infinity) <= Date.now() ? null : record.claim,
+    })) });
+  }
+  private fetch(url: URL): Promise<Response> {
+    return (this.deps.fetchImpl ?? fetch)(url.toString(), { redirect: "manual", cache: "no-store", signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(8_000)]) });
+  }
+  private publish(): void { if (!this.abort.signal.aborted) this.deps.publishStatus(); }
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      if (this.abort.signal.aborted) return resolve();
+      const done = () => { clearTimeout(timer); this.abort.signal.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, ms);
+      this.abort.signal.addEventListener("abort", done, { once: true });
+    });
+  }
 }

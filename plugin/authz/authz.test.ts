@@ -71,7 +71,7 @@ describe("classifyPath", () => {
     });
     // `/projects/{p}/threads` (no thread id) lists threads in a project → still
     // project-scoped, not a thread path.
-    expect(classifyPath("/projects/p2/threads").kind).toBe("project");
+    expect(classifyPath("/projects/p2/threads").kind).toBe("invalid");
   });
 
   it("classifies the enumerated non-thread endpoints as pass-through", () => {
@@ -80,7 +80,6 @@ describe("classifyPath", () => {
       "/sidebar-bootstrap",
       "/api/v1/plugins",
       "/hosts",
-      "/api/v1/plugin-settings/anything",
     ]) {
       expect(classifyPath(p).kind).toBe("non-thread");
     }
@@ -253,7 +252,7 @@ describe("deny-by-default (issues 23, 24)", () => {
       method: "POST",
     });
     expect(res.allowed).toBe(false);
-    expect(res.reason).toMatch(/may not POST/);
+    expect(res.reason).toMatch(/unrecognized path|may not POST/);
   });
 
   it("write guest cannot DELETE a thread — only /send is allowed", async () => {

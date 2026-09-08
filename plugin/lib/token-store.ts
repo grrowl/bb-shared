@@ -4,7 +4,7 @@
 // durable snapshot is owned by `share-state-record.ts` and restores it after
 // a plugin or app restart.
 //
-// Security note (per ticket 05, refining SPEC.md):
+// Security note:
 // - The raw token is generated once and used as the guest bearer. The active
 //   store never exposes it; the owner-only durable snapshot encrypts it with a
 //   device-bound key so existing links can survive restarts.
@@ -352,48 +352,19 @@ function cloneToken(t: Token): Token {
 }
 
 // ---------------------------------------------------------------------------
-// URL builder — placeholder until issue 07 wires the worker URL through.
-// ---------------------------------------------------------------------------
-
+// Invitation URLs are only available after a connection is configured.
 export interface BuildShareUrlOptions {
-  /** Optional deep link to land the guest on a specific thread. */
   firstThread?: { project_id: string; thread_id: string };
-  /**
-   * Base URL of the deployed worker for this bb instance. If undefined, the
-   * placeholder `https://<worker-pending>` is used and the caller (RPC
-   * handler) leaves a TODO — issue 07 owns wiring the real URL.
-   */
   workerOrigin?: string;
 }
-
-export function buildShareUrl(
-  rawToken: string,
-  opts: BuildShareUrlOptions = {},
-): string {
-  // TODO(issue 07): replace the placeholder origin with the live worker URL
-  // once the worker deploy pipeline lands and can be surfaced via
-  // `getWorkerStatus`.
-  const origin = opts.workerOrigin ?? "https://<worker-pending>";
-  // The token rides as `?token=` (the query form), NOT `/{token}/…`. Only the
-  // query form makes the worker drop a session cookie and 302 to the clean
-  // path (worker set-cookie-redirect stage); that cookie is what authenticates
-  // the SPA's absolute sub-requests (`/assets/*`, favicons) — none of which
-  // carry the token in their path. A bare `/{token}/…` link sets no cookie, so
-  // every asset request arrives credential-less and 401s. See SPEC §"Guest
-  // URL" and the worker cookie flow.
-  if (opts.firstThread) {
-    const { project_id, thread_id } = opts.firstThread;
-    return `${origin}/projects/${project_id}/threads/${thread_id}?token=${rawToken}`;
-  }
-  return `${origin}/?token=${rawToken}`;
+export function buildShareUrl(rawToken: string, opts: BuildShareUrlOptions = {}): string | undefined {
+  if (!opts.workerOrigin) return undefined;
+  const path = opts.firstThread
+    ? `/projects/${encodeURIComponent(opts.firstThread.project_id)}/threads/${encodeURIComponent(opts.firstThread.thread_id)}` : "/";
+  const url = new URL(path, opts.workerOrigin);
+  url.searchParams.set("token", rawToken);
+  return url.toString();
 }
-
-// ---------------------------------------------------------------------------
-// Wire projection (issue 32). `listTokens` and `mintToken` return each token
-// enriched with a resolved title per share and the session's guest URL. Both
-// derivations are pure and live here so a single unit test pins the shape. The
-// caller owns the raw token map, rehydrated from encrypted share state.
-// ---------------------------------------------------------------------------
 
 export interface EnrichedShare extends Share {
   /** Resolved thread title; falls back to `thread_id` when the thread is gone. */
@@ -441,20 +412,11 @@ export async function enrichToken(
         // Thread deleted, or the lookup failed — show the id (SPEC surface 5).
         title = s.thread_id;
       }
-      return {
-        ...s,
-        title,
-        url:
-          deps.rawToken !== undefined
-            ? buildShareUrl(deps.rawToken, {
-                workerOrigin: deps.workerOrigin,
-                firstThread: {
-                  project_id: s.project_id,
-                  thread_id: s.thread_id,
-                },
-              })
-            : undefined,
-      };
+      const url = deps.rawToken === undefined ? undefined : buildShareUrl(deps.rawToken, {
+        workerOrigin: deps.workerOrigin,
+        firstThread: { project_id: s.project_id, thread_id: s.thread_id },
+      });
+      return { ...s, title, ...(url === undefined ? {} : {url}) };
     }),
   );
   const first = token.shares[0];
@@ -467,5 +429,5 @@ export async function enrichToken(
             : undefined,
         })
       : undefined;
-  return { ...token, shares, url };
+  return { ...token, shares, ...(url === undefined ? {} : {url}) };
 }

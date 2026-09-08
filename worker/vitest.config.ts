@@ -9,7 +9,7 @@ export default defineConfig({
     alias: {
       "@bb-shared/tunnel-contract": fileURLToPath(
         new URL(
-          "../packages/bb-shared-tunnel-contract/src/index.ts",
+          "../plugin/packages/bb-shared-tunnel-contract/src/index.ts",
           import.meta.url,
         ),
       ),
@@ -17,9 +17,7 @@ export default defineConfig({
   },
   test: {
     include: ["tests/**/*.test.ts"],
-    // Pure-function + mocked-socket tests; no Workers pool needed. When we later
-    // add live DO/edge integration tests, split them out with
-    // @cloudflare/vitest-pool-workers.
+    // Transport unit tests plus real workerd integration managed by Miniflare.
     environment: "node",
   },
 });

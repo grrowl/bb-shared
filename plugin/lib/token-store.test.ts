@@ -301,11 +301,11 @@ describe("mintToken label dedupe", () => {
 });
 
 describe("buildShareUrl", () => {
-  it("uses the pending placeholder origin when no worker is wired", () => {
+  it("omits the URL until a connection is configured", () => {
     const url = buildShareUrl("bbsh_raw");
     // Query `?token=` form: the worker only sets the session cookie (needed for
     // absolute asset requests) when the token arrives as a query param.
-    expect(url).toBe("https://<worker-pending>/?token=bbsh_raw");
+    expect(url).toBeUndefined();
   });
 
   it("includes the deep-link thread path with the token as a query param", () => {

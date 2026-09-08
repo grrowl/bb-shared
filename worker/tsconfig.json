@@ -16,9 +16,10 @@
     // Both tsc (bundler resolution) and wrangler's esbuild honour this map.
     "paths": {
       "@bb-shared/tunnel-contract": [
-        "../packages/bb-shared-tunnel-contract/src/index.ts"
+        "../plugin/packages/bb-shared-tunnel-contract/src/index.ts"
       ]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["tests/full-stack-runtime.test.ts"]
 }

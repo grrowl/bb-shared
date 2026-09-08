@@ -1,30 +1,4 @@
-// Owner-facing "Share this thread" popover — the body of issue 15's
-// `experimental_threadHeaderAction` and the target of the matching
-// `commandPaletteAction`.
-//
-// The popover is anchored to a Share icon-button in the thread-header row
-// (48px chrome, 28px controls per the SDK docs) and portalled via the
-// vendored `Popover` — the row is too short for an inline form.
-//
-// Recipient-first model (issue 34): a Link is a named recipient you grant
-// threads to. The popover lists the Links and, per row, shows a 3-state
-// `PermSegment` (off | read | write) for THIS thread's grant on that Link.
-// Off revokes, read/write grant. Each linked row can copy a guest URL that
-// lands directly on this thread.
-//
-// RPC + realtime:
-// - `listTokens()` seeds the list on open; a `REALTIME_CHANNELS.tokensChanged`
-//   subscription refreshes it so a share change made in the nav panel or
-//   another window is reflected here immediately.
-// - The segment calls `removeShare` (off), `addShare` (a fresh read/write), or
-//   `updateShare` (read↔write on a thread already shared).
-// - "New link" calls `mintToken` → attaches this thread → copies the returned
-//   guest URL. The server auto-names the Link (verb-noun) when no label is
-//   passed.
-//
-// The "Manage all links" link routes to this plugin's `tokens` nav panel.
-// `useBbNavigate().toPluginPanel("tokens")` resolves to
-// `/plugins/shared/tokens` at runtime.
+// Thread permissions for audience invitations, using the default connection.
 import * as React from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Copy01Icon, Share08Icon, Tick02Icon } from "@hugeicons/core-free-icons";
@@ -35,6 +9,8 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 
+import { ConnectionSummary, useConnections } from "../nav-panel/connections.js";
+import { Input } from "../components/ui/input.js";
 import { Button } from "../components/ui/button.js";
 import {
   PermSegment,
@@ -82,6 +58,9 @@ interface ShareFormProps {
 function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
+  const { connections, error: connectionError } = useConnections();
+  const connection = connections?.find((item) => item.isDefault);
+  const [label, setLabel] = React.useState("");
 
   const [tokens, setTokens] = React.useState<Token[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -93,35 +72,19 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
   const [flash, setFlash] = React.useState<string | null>(null);
   const [minting, setMinting] = React.useState(false);
 
+  const request = React.useRef(0);
   const load = React.useCallback(() => {
-    // A stale call landing after the popover is reopened would clobber a
-    // fresher list; abort-style cancellation isn't part of the rpc client, so
-    // we tolerate the last-write-wins with a component-scoped flag.
-    let cancelled = false;
-    rpc
-      .call("listTokens", null)
-      .then((res) => {
-        if (cancelled) return;
-        setTokens(res.tokens);
-        setLoadError(null);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
+    const current = ++request.current;
+    rpc.call("listTokens", null).then((res) => {
+      if (current !== request.current) return;
+      setTokens(res.tokens); setLoadError(null);
+    }).catch((err: unknown) => {
+      if (current === request.current) setLoadError(err instanceof Error ? err.message : String(err));
+    });
   }, [rpc]);
-
-  React.useEffect(() => load(), [load]);
-
-  // Any token mutation anywhere (mint / rename / delete / share add / remove
-  // / update) refetches. The channel is coarse on purpose — a fine-grained
-  // patch stream would need consumer-side reducers per event kind.
-  useRealtime(REALTIME_CHANNELS.tokensChanged, () => {
-    load();
-  });
+  React.useEffect(() => { load(); return () => { request.current++; }; }, [load]);
+  useRealtime(REALTIME_CHANNELS.tokensChanged, load);
+  useRealtime(REALTIME_CHANNELS.workerChanged, load);
 
   const showFlash = React.useCallback((message: string) => {
     setFlash(message);
@@ -204,27 +167,18 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     setMinting(true);
     setActionError(null);
     try {
-      // Mint and attach the current thread in one call, so `url` is a deep
-      // link straight to this thread (the query `?token=` form the worker
-      // needs to set the session cookie). The label is omitted so the server
-      // auto-names the Link with its verb-noun generator.
+      // Persist the invitation and its first thread atomically. A connection
+      // can be added later; then listTokens supplies the copyable URL.
       const { url } = await rpc.call("mintToken", {
+        ...(label.trim() ? { label: label.trim() } : {}),
         firstThread: { thread_id: threadId, project_id: projectId, perm },
       });
 
-      // Clipboard writes require a user gesture; the mint button click is
-      // that gesture. On surfaces without the API (older webviews) we
-      // degrade to showing the URL in the flash.
-      const clipboard = globalThis.navigator?.clipboard;
-      if (clipboard !== undefined) {
-        try {
-          await clipboard.writeText(url);
-          showFlash("Link copied.");
-        } catch {
-          showFlash(url);
-        }
+      setLabel("");
+      if (url === undefined) {
+        showFlash("Invitation created. Add a connection to copy its link.");
       } else {
-        showFlash(url);
+        await copyUrl("new", url);
       }
       load();
     } catch (err: unknown) {
@@ -232,7 +186,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
     } finally {
       setMinting(false);
     }
-  }, [rpc, threadId, projectId, showFlash, load]);
+  }, [rpc, threadId, projectId, label, showFlash, copyUrl, load]);
 
   const handleManageAll = React.useCallback(() => {
     onClose();
@@ -250,6 +204,11 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
         ) : null}
       </div>
 
+      {connectionError ? <p className="text-xs text-destructive">{connectionError}</p> : connection ? <>
+        <ConnectionSummary connection={connection} />
+        {connection.state !== "ready" ? <p className="text-xs text-muted-foreground">Links can be copied now. Guests can connect when this hostname is ready.</p> : null}
+      </> : <p className="text-xs text-muted-foreground">{connections === null ? "Checking connections…" : "Invitations are saved on this machine. Open management to deploy a connection or add your hostname, then copy a link."}</p>}
+
       {/* Grant this thread to a Link (recipient) ----------------------- */}
       <section className="flex flex-col gap-2">
         {loadError !== null ? (
@@ -258,7 +217,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
           <p className="text-xs text-muted-foreground">Loading…</p>
         ) : tokens.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No link yet. Create one below to share this thread.
+            No invitations yet. Create one below to share this thread.
           </p>
         ) : (
           <>
@@ -283,7 +242,7 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
                       <span
                         title={
                           existing?.url === undefined
-                            ? "Share this thread first to copy its URL"
+                            ? existing === undefined ? "Share this thread first to copy its URL" : "Add a connection to copy this invitation"
                             : "Copy URL for this thread"
                         }
                       >
@@ -320,11 +279,12 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
 
       {/* Create a new link --------------------------------------------- */}
       <section className="flex flex-col gap-2 border-t border-border/60 pt-3">
+        <Input aria-label="Audience label (optional)" placeholder="Audience label (optional)" value={label} maxLength={64} disabled={minting} onChange={(event) => setLabel(event.target.value)} />
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium">Create new link</span>
+          <span className="text-xs font-medium">Create invitation</span>
           <div
             role="group"
-            aria-label="Create link with permission"
+            aria-label="Create invitation with permission"
             className="inline-flex items-center rounded-md border border-input p-0.5"
           >
             {(["read", "write"] as const).map((perm) => (
@@ -344,15 +304,15 @@ function ShareForm({ threadId, projectId, onClose }: ShareFormProps) {
           <p className="text-xs text-destructive">{actionError}</p>
         ) : null}
       </section>
-      {tokens !== null && tokens.length > 0 ? (
+      {(
         <button
           type="button"
           onClick={handleManageAll}
           className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-muted-foreground/80"
         >
-          Manage all links
+          Manage connections and invitations
         </button>
-      ) : null}
+      )}
     </div>
   );
 }

@@ -13,8 +13,8 @@
  *      frames into a Response, and pump `ws-data` both ways for upgrades.
  *   3. Answer 503 with `x-bb-tunnel-offline: 1` when no tunnel is connected.
  *
- * This is a faithful port of bb's `apps/connect/src/tunnel-do.ts` (issue 27,
- * decision in `.scratch/v0/issues/27-*.md`), trimmed of the bits bb-shared does
+ * This is a faithful port of bb's `apps/connect/src/tunnel-do.ts`, trimmed of
+ * the bits bb-shared does
  * not need: no D1/presence/machine bookkeeping, and no `target` port-sharing
  * (bb-shared is one worker per bb instance; every stream routes to the single
  * loopback origin, so the DO never sets a `target` on any frame). The wire
@@ -31,6 +31,8 @@
 
 import type { Env } from "../env.js";
 import {
+  PROTOCOL_VERSION,
+  TUNNEL_PROTOCOL_QUERY_PARAM,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
   decodeFrame,
@@ -162,11 +164,6 @@ export class TunnelDO {
     if (url.pathname === "/__tunnel") {
       return this.acceptTunnel(request);
     }
-    // Reserve `/__` for internal tunnel routes; everything else is guest
-    // traffic to be proxied.
-    if (url.pathname.startsWith("/__")) {
-      return text("bb-shared: not found\n", 404);
-    }
     return this.proxyGuestRequest(request, url);
   }
 
@@ -181,6 +178,10 @@ export class TunnelDO {
     }
     if (!timingSafeEqual(secret, presented)) {
       return text("bb-shared tunnel: invalid credential\n", 401);
+    }
+
+    if (new URL(request.url).searchParams.get(TUNNEL_PROTOCOL_QUERY_PARAM) !== String(PROTOCOL_VERSION)) {
+      return text(`bb-shared tunnel: unsupported relay protocol; expected v=${PROTOCOL_VERSION}\n`, 426);
     }
 
     // Single tunnel per worker: a fresh dial replaces any previous socket.

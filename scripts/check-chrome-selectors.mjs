@@ -4,7 +4,7 @@
  * bb SPA, so a bb version bump that renames or removes one of our hide targets
  * fails CI instead of silently un-hiding owner-only chrome for guests.
  *
- * Source of truth: worker/src/chrome-selectors.ts. Each entry there carries a
+ * Source of truth: plugin/guest-gateway/chrome-selectors.ts. Each entry there carries a
  * `probe` — a stable substring (a `data-testid` value or an `aria-label` text)
  * that survives minification and appears verbatim in the built output. This
  * script greps the built SPA for every probe; any probe that appears in NO
@@ -27,7 +27,7 @@
  *                     Pass e.g. --ext tsx,ts,html to smoke-test against a bb
  *                     source tree that has not been built.
  *   --selectors <p>   Path to chrome-selectors.ts
- *                     (default: <repo>/worker/src/chrome-selectors.ts).
+ *                     (default: <repo>/plugin/guest-gateway/chrome-selectors.ts).
  *
  * Exit codes: 0 all probes present · 1 one or more probes missing (drift) ·
  * 2 usage / IO error (bad path, no candidate files, unreadable selectors).
@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
-const DEFAULT_SELECTORS = join(REPO_ROOT, "worker", "src", "chrome-selectors.ts");
+const DEFAULT_SELECTORS = join(REPO_ROOT, "plugin", "guest-gateway", "chrome-selectors.ts");
 const DEFAULT_EXTS = ["js", "mjs", "cjs", "html", "htm"];
 const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
@@ -157,7 +157,7 @@ function main() {
     process.stderr.write(
       `\ncheck-chrome-selectors: DRIFT — ${missing.size} selector(s) not found ` +
         `in the built SPA. bb likely renamed or removed these; update ` +
-        `worker/src/chrome-selectors.ts and BB_VERSION.\n\n`,
+        `plugin/guest-gateway/chrome-selectors.ts and BB_VERSION.\n\n`,
     );
     for (const { probe, css } of pins) {
       if (missing.has(probe)) {

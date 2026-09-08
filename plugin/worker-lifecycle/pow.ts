@@ -1,5 +1,5 @@
 // Proof-of-work solver for Cloudflare's anonymous temp-account provisioning
-// (spike 01, `research/cf-temp-deployments.md` §"Path B").
+// used by Cloudflare's temporary-deployment flow.
 //
 // The provisioning `/challenge` endpoint hands back `{ challengeToken, seed, k,
 // g }` with `k * g ≤ 64,000,000`. The solution is a chain of `k + 1` 32-byte
@@ -11,7 +11,7 @@
 // The seed-hash detail is authoritative from wrangler's own solver
 // (`packages/workers-auth/src/pow.ts:27-38`) and verified live: seeding the
 // chain with the raw seed instead is rejected by CF with `pow_invalid`
-// (HTTP 403, code 1019). See research/cf-live-verification.md TASK 1 bug 1.
+// (HTTP 403, code 1019).
 //
 // Pure + deterministic so it is unit-testable without hitting Cloudflare. The
 // seed arrives base64url-encoded (wrangler decodes it as such, `pow.ts:48`).

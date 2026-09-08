@@ -166,7 +166,7 @@ describe("TokenCard", () => {
   it("disables Copy URL with a plain hint when the url is absent", () => {
     const html = renderCard(token({ url: undefined }));
     expect(html).toContain('disabled=""');
-    expect(html).toContain('title="Create the link again to copy it"');
+    expect(html).toContain('title="Add a connection to copy this invitation"');
   });
 
   it("shows the derived perm summary badge for a link with shares", () => {
@@ -179,11 +179,11 @@ describe("TokenCard", () => {
   it("omits the badge when the link has no shares", () => {
     const html = renderCard(token({ shares: [] }));
     expect(html).not.toMatch(/>(read|write)<\/span>/);
-    expect(html).toContain("No threads on this link yet.");
+    expect(html).toContain("No threads on this invitation yet.");
   });
 
   it("keeps the delete confirmation copy", () => {
     const html = renderCard(token());
-    expect(html).toContain(`Delete link ${token().label}`);
+    expect(html).toContain(`Delete invitation ${token().label}`);
   });
 });

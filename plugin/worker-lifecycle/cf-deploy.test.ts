@@ -49,6 +49,8 @@ interface FakeCfOptions {
   onEnableRoute?: (body: unknown) => void;
   /** Status the propagated workers.dev URL serves (default 401 = live). */
   serveStatus?: number;
+  serveBody?: unknown;
+  onMetadata?: (metadata: unknown) => void;
 }
 
 /** A fake CF REST + workers.dev origin driving the whole deploy pipeline. */
@@ -79,6 +81,7 @@ function fakeCf(opts: FakeCfOptions = {}): typeof fetch {
     }
     // Script upload (raw multipart PUT).
     if (method === "PUT" && /\/workers\/scripts\/[^/]+$/.test(u)) {
+      opts.onMetadata?.(JSON.parse(String((init?.body as FormData).get("metadata"))));
       return opts.onUpload
         ? opts.onUpload()
         : jsonResponse({ success: true, result: { id: "dep-1" } });
@@ -94,7 +97,7 @@ function fakeCf(opts: FakeCfOptions = {}): typeof fetch {
     }
     // The workers.dev URL itself (route-propagation probe).
     if (u.startsWith("https://bb-shared.sub.workers.dev")) {
-      return new Response("", { status: opts.serveStatus ?? 401 });
+      return jsonResponse(opts.serveBody ?? {service: "bb-shared-relay", version: 1, protocolVersion: 1, relayId: "relay-1"}, opts.serveStatus ?? 200);
     }
     throw new Error(`unexpected fetch: ${method} ${u}`);
   }) as unknown as typeof fetch;
@@ -108,7 +111,6 @@ const input: DeployInput = {
   compatibilityDate: "2025-06-01",
   scriptContent: "export default {}",
   tunnelSecret: TUNNEL_SECRET,
-  authzToken: AUTHZ_TOKEN,
   doClassName: "TunnelDO",
   doBindingName: "TUNNEL_DO",
   migrationTag: "v1",
@@ -179,5 +181,17 @@ describe("deployWorker secret redaction (M3, ticket 20)", () => {
     expect(message).not.toContain(TUNNEL_SECRET);
     expect(message).not.toContain(AUTHZ_TOKEN);
     expect(message).toContain("[redacted]");
+  });
+});
+
+
+describe("relay deployment contract", () => {
+  it("uploads only the tunnel pairing secret", async () => {
+    let metadata: any;
+    await deployWorker(input, {fetchImpl: fakeCf({onMetadata: value => metadata = value}), sleep: async () => {}, maxAttempts: 1});
+    expect(metadata.bindings.filter((b: any) => b.type === "secret_text")).toEqual([{type: "secret_text",name: "TUNNEL_SECRET",text: TUNNEL_SECRET}]);
+  });
+  it.each([{serveStatus: 401}, {serveStatus: 404}, {serveStatus: 200, serveBody: {service: "some-other-app"}}])("rejects an unverified route: %j", async options => {
+    await expect(deployWorker(input, {fetchImpl: fakeCf(options), sleep: async () => {}, maxAttempts: 1, propagationProbes: 2})).rejects.toThrow("Relay identity unavailable");
   });
 });

@@ -1,10 +1,8 @@
 /* shadcn/ui-derived — AlertDialog.
  *
- * Vendored for issue 16's confirm-before-delete flow. SPEC.md §"Owner UI"
- * mandates the shadcn `AlertDialog` for confirm dialogs ("No modal API exists
- * in bb …"). The repo's `components/ui` set ships the responsive `Dialog` but
- * not an `AlertDialog`, so this file adds one, scoped to `nav-panel/` per issue
- * 16's file-touch constraint (only `app.tsx` and new `nav-panel/` files).
+ * Vendored for the link deletion and worker recreation confirmations. The
+ * repo's `components/ui` set ships the responsive `Dialog` but not an
+ * `AlertDialog`, so this file adds one scoped to `nav-panel/`.
  *
  * It mirrors `dialog.tsx`'s portal-scope handling: Radix portals the overlay
  * and content into `document.body`, outside the plugin's `[data-bb-plugin]`

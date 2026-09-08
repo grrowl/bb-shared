@@ -1,168 +1,47 @@
-# bb-shared worker
+# BB Shared relay
 
-Cloudflare Worker that gates guest browsers on a bb-shared token and proxies
-their traffic to the owner's local bb over the shared tunnel. This is the
-"CF half" from the SPEC architecture diagram
-(`~/grrowl/bb-shared/SPEC.md`); the "local half" is the `SharedTunnel`
-delivered by issue 14 and the bb-shared plugin.
+A minimal Cloudflare Worker and Durable Object transport. The Worker contains
+no guest authorization, cookies, response filters, or UI policy. The BB plugin
+opens an outbound tunnel and enforces every guest request locally.
 
-**Scope of this scaffold (issue 08):**
+## Self-deploy
 
-- Token extraction from `/{token}/...` path, `?token=...` query, or
-  `bb_shared_session` cookie.
-- `?token=` handling: set cookie + 302 to the clean path shape.
-- `/__tunnel` handshake with bearer auth (`TUNNEL_SECRET` env var).
-- Origin forwarding that satisfies the constraint from spike 02.
-- Stage-based request pipeline so 09/10/11/12 slot in as separate files.
+Install dependencies, authenticate Wrangler to the intended Cloudflare account,
+and set a random pairing secret (at least 32 base64url characters):
 
-**Now implemented** (were deferred at scaffold time):
-
-- Response filters (09), mutation gate + route lockouts (10), WS filter (11),
-  SPA chrome shim (12) — each is its own stage under `src/stages/`.
-- The CF-side tunnel wire protocol (encoding `open-http` / `open-ws`, decoding
-  `resp-head` + body, WS passthrough) lives in `src/tunnel/tunnel-do.ts`
-  (issue 27). It is a faithful port of bb's `apps/connect/src/tunnel-do.ts`,
-  trimmed of D1/presence and port-sharing (bb-shared is one worker per bb
-  instance). Both sides speak `@bb-shared/tunnel-contract`; the DO still
-  answers 503 with `x-bb-tunnel-offline: 1` when no tunnel is connected.
-  Verified live end to end (guest HTTP + WS round-trip over a real anonymous
-  temp deploy) — see `.scratch/v0/issues/27-cf-tunnel-proxy-implementation.md`.
-
-## Layout
-
-```
-worker/
-├── wrangler.toml            # Wrangler config; TUNNEL_DO binding + v1 migration
-├── package.json             # Node deps: wrangler, @cloudflare/workers-types, vitest
-├── tsconfig.json            # strict, esnext, workers-types
-├── vitest.config.ts
-├── src/
-│   ├── worker.ts            # entry: /__tunnel path + pipeline dispatch
-│   ├── env.ts               # Env bindings (TUNNEL_DO, TUNNEL_SECRET)
-│   ├── pipeline.ts          # runPipeline + Stage type
-│   ├── token.ts             # extractToken + regex + clean-redirect builder
-│   ├── cookie.ts            # parseCookieHeader + serializeSessionCookie
-│   ├── origin.ts            # prepareOriginForTunnel (spike-02 constraint)
-│   ├── errors.ts            # jsonError helper
-│   ├── stages/
-│   │   ├── extract-token.ts
-│   │   ├── set-cookie-redirect.ts
-│   │   ├── prepare-tunnel-request.ts
-│   │   └── dispatch.ts
-│   └── tunnel/
-│       ├── interface.ts     # TunnelRouter contract
-│       ├── do-router.ts     # DO-backed TunnelRouter factory
-│       └── tunnel-do.ts     # TunnelDO — /__tunnel dial + guest proxy
-└── tests/
-    ├── token.test.ts
-    ├── origin.test.ts
-    └── cookie.test.ts
+```sh
+npm ci
+npx wrangler login
+npx wrangler secret put TUNNEL_SECRET
+npx wrangler deploy
 ```
 
-## Local dev
+Keep the secret and enter it together with the resulting HTTPS hostname in BB's
+**Manage sharing → Connections → Add existing connection**. Do not put the secret
+in invitation URLs. A custom domain can be the registered canonical hostname.
+One relay accepts one active BB tunnel; duplicate aliases should not be registered
+as independent connections.
 
-```
-npm install
-echo 'TUNNEL_SECRET=dev-anything' > .dev.vars   # not committed
-npm run dev                                     # http://127.0.0.1:8787
-```
+## Contract
 
-`wrangler dev` serves the worker with the DO binding running in the local
-workerd. Without a paired local `SharedTunnel`, every guest request answers
-503 with `x-bb-tunnel-offline: 1` and the body
-`bb-shared: no tunnel connected …`. That's expected until issue 14.
+- `GET /__bb_shared/relay`: public service/version/protocol/relay identity.
+- `/__tunnel?v=1`: WebSocket upgrade authenticated by `TUNNEL_SECRET`.
+- All other requests: HTTP/WebSocket traffic forwarded over the active tunnel.
+- No tunnel: HTTP 503 with `x-bb-tunnel-offline: 1`.
+- `x-bb-shared-public-origin` is overwritten from the incoming URL.
 
-The one route you can exercise standalone is the token pipeline:
+`TUNNEL_DO` binds the SQLite Durable Object. `AUTHZ_TOKEN` is neither required nor
+used. Runtime identity is not a credential; local registration also verifies
+pairing and an end-to-end gateway readiness proof. Transport v1 is intentionally
+small and stable, but future transport fixes may still require a relay update.
 
-```
-curl -i "http://127.0.0.1:8787/"
-# → 401 { "error": "token_missing", ... }
+## Checks and artifact
 
-curl -i "http://127.0.0.1:8787/?token=bbsh_$(node -e 'process.stdout.write("A".repeat(32))')"
-# → 302 Location: /bbsh_A…/  + Set-Cookie: bb_shared_session=bbsh_A…
-
-curl -i "http://127.0.0.1:8787/bbsh_$(node -e 'process.stdout.write("A".repeat(32))')/"
-# → 503 x-bb-tunnel-offline: 1  (token accepted, tunnel not up)
-```
-
-## Tests + typecheck
-
-```
-npm run test        # vitest — pure-function coverage of token/origin/cookie
-npm run typecheck   # tsc --noEmit against the whole src tree
+```sh
+npm run typecheck
+npm test
+npm run build
 ```
 
-## Environment variables the worker expects
-
-| Name            | Where set                          | Purpose                                          |
-| --------------- | ---------------------------------- | ------------------------------------------------ |
-| `TUNNEL_SECRET` | Cloudflare **secret** (prod), `.dev.vars` (local dev) | Bearer that `SharedTunnel` (issue 14) presents on `/__tunnel` dial. Format is opaque here — 07 defines it. |
-
-`TUNNEL_DO` is not an env var — it's the Durable Object binding declared in
-`wrangler.toml`. There's a single DO instance per worker
-(`idFromName("singleton")`) because a worker owns exactly one bb server.
-
-## Deploy notes (for issue 07 to consume)
-
-- **Compatibility date:** `2025-06-01` (pinned in `wrangler.toml`). If 07's
-  deploy pipeline uploads via the `cloudflare` SDK REST path, mirror this in
-  the `metadata.compatibility_date` field.
-- **Bindings and migrations that must be uploaded on first deploy:**
-  ```json
-  {
-    "bindings": [
-      {
-        "type": "durable_object_namespace",
-        "name": "TUNNEL_DO",
-        "class_name": "TunnelDO"
-      },
-      {
-        "type": "secret_text",
-        "name": "TUNNEL_SECRET",
-        "text": "<generated by 07 at deploy time>"
-      }
-    ],
-    "migrations": { "new_classes": ["TunnelDO"] }
-  }
-  ```
-  On any subsequent redeploy from the SAME temp account, `migrations` must be
-  omitted (`TunnelDO` already exists). 07 tracks deploy generation.
-- **The worker script is a single entry** (`src/worker.ts`) with the
-  `TunnelDO` class re-exported. Bundling: rely on wrangler's default esbuild
-  step (invoked by both `wrangler dev` and the SDK's `scripts.update` if
-  passed a pre-bundled string). For the SDK path, run `wrangler deploy
-  --dry-run --outdir dist` and hand `dist/worker.js` to `scripts.update`.
-- **Secret sync:** the same `TUNNEL_SECRET` value must be planted in the
-  local bb-shared plugin KV so `SharedTunnel` can dial. 07 owns both ends of
-  this handshake and must generate the secret before uploading the worker.
-- **URL shape:** deployed worker URL is
-  `https://bb-shared-worker.<sub>.workers.dev` — the `bb-shared-worker`
-  script name is set in `wrangler.toml`. 07 may override to include the
-  deployment id if we want per-share subdomains later.
-- **Health check for reuse-on-restart:** `GET https://<worker>/` returns
-  401 `{ "error": "token_missing" }` when the worker is alive. That's the
-  cheapest liveness probe — any non-error HTTP response indicates the
-  script is deployed and reachable.
-
-## Design notes for downstream tickets
-
-- **Stage system** — every incremental feature is a new file under
-  `src/stages/` and one added entry in `worker.ts`'s stage array. Do NOT edit
-  the existing stages when adding a new one; if a stage needs to wrap the
-  response of a later stage (09, 12), extend `runPipeline` into an
-  onion-style call chain rather than special-casing `dispatch`.
-- **`TunnelRouter` interface** (`src/tunnel/interface.ts`) is the seam
-  between the pipeline and the transport. Tests can substitute a stub; issue
-  14 replaces the stubbed forwarding path inside `TunnelDO`.
-- **Origin invariant** — see `src/origin.ts`. If a future stage rewrites the
-  request URL host, remember to re-set Origin to match; `prepareOriginForTunnel`
-  is idempotent and cheap.
-
-## References
-
-- SPEC: `~/grrowl/bb-shared/SPEC.md`
-- Feature map: `~/grrowl/bb-shared/.scratch/v0/map.md`
-- Spike 01 (deploy path + WS/DO support): `~/grrowl/bb-shared/research/cf-temp-deployments.md`
-- Spike 02 (tunnel constraint + fork-lite plan): `~/grrowl/bb-shared/research/tunnel-client.md`
-- Fork target: `/tmp/claude/bb-research/bb/apps/connect/src/worker.ts`
-- Local Origin guard we must not trip: `/tmp/claude/bb-research/bb/apps/server/src/browser-request-guard.ts`
+Tests run in both Node and actual `workerd` via Miniflare. Build generates the
+plugin's embedded relay source; it does not deploy anything.
